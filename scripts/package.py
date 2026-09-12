@@ -10,13 +10,29 @@ VERSION = json.loads((ROOT / 'package.json').read_text())['version']
 FILES = ['.codex-plugin/plugin.json', '.mcp.json', '.gitignore', 'package.json',
          'package-lock.json', 'build.mjs', 'tsconfig.json', 'README.md',
          'INSTALL.md', 'CUSTOMIZE.md', 'CONTRIBUTING.md', 'codex.example.toml']
-DIRECTORIES = ['src', 'plugin', 'runtime', 'skills', 'scripts', 'test', 'examples']
+DIRECTORIES = ['src', 'plugin', 'runtime', 'scripts', 'test', 'examples']
+SKILL_ROOT = ROOT / 'skills' / 'figma-local-design'
+SKILL_FILES = ['SKILL.md', 'version.json', 'agents/openai.yaml', 'scripts/install.mjs']
+SKILL_DIRECTORIES = ['assets', 'references']
+FORBIDDEN_SKILL_PARTS = {'.github', '.git', '.skillstore-meta.json', 'installation.json'}
+
+def skill_inputs():
+    inputs = [SKILL_ROOT / path for path in SKILL_FILES]
+    for directory in SKILL_DIRECTORIES:
+        inputs.extend(path for path in (SKILL_ROOT / directory).rglob('*') if path.is_file())
+    for path in inputs:
+        relative = path.relative_to(SKILL_ROOT)
+        if path.is_symlink() or any(part in FORBIDDEN_SKILL_PARTS for part in relative.parts):
+            raise ValueError(f'Forbidden or symlinked skill input: {relative}')
+    return inputs
 
 def package():
     files = [ROOT / f for f in FILES]
     for directory in DIRECTORIES:
         files.extend(p for p in (ROOT / directory).rglob('*')
                      if p.is_file() and '__pycache__' not in p.parts and p.suffix != '.pyc')
+    packaged_skill_inputs = skill_inputs()
+    files.extend(packaged_skill_inputs)
     for path in files:
         if not path.is_file() or path.is_symlink():
             raise ValueError(f'Missing file or symlink: {path}')
@@ -38,21 +54,10 @@ def package():
     digest = hashlib.sha256(target.read_bytes()).hexdigest()
     target.with_suffix('.zip.sha256').write_text(f'{digest}  {target.name}\n')
     print(f'{target}\n{target.stat().st_size:,} bytes\nSHA256 {digest}')
-    skill_root = ROOT / 'skills' / 'figma-local-design'
-    skill_files = ['SKILL.md', 'version.json', 'agents/openai.yaml', 'scripts/install.mjs']
-    skill_directories = ['assets', 'references']
-    skill_inputs = [skill_root / path for path in skill_files]
-    for directory in skill_directories:
-        skill_inputs.extend(path for path in (skill_root / directory).rglob('*') if path.is_file())
-    forbidden = {'.github', '.git', '.skillstore-meta.json', 'installation.json'}
-    for path in skill_inputs:
-        relative = path.relative_to(skill_root)
-        if any(part in forbidden for part in relative.parts):
-            raise ValueError(f'Forbidden SkillStore file: {relative}')
     skill_target = target.parent / f'figma-local-design-skill-{VERSION}.zip'
     with zipfile.ZipFile(skill_target, 'w', zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
-        for path in sorted(set(skill_inputs)):
-            info = zipfile.ZipInfo('figma-local-design/' + path.relative_to(skill_root).as_posix(), date_time=(2026, 1, 1, 0, 0, 0))
+        for path in sorted(set(packaged_skill_inputs)):
+            info = zipfile.ZipInfo('figma-local-design/' + path.relative_to(SKILL_ROOT).as_posix(), date_time=(2026, 1, 1, 0, 0, 0))
             info.external_attr = 0o100644 << 16
             archive.writestr(info, path.read_bytes(), compress_type=zipfile.ZIP_DEFLATED, compresslevel=9)
     skill_digest = hashlib.sha256(skill_target.read_bytes()).hexdigest()

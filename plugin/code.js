@@ -839,7 +839,7 @@
     figma.ui.postMessage({ type: "document", document: {
       name: figma.root.name,
       page: figma.currentPage.name,
-      pluginVersion: "0.6.2",
+      pluginVersion: "0.6.3",
       capabilities: getCapabilities()
     } });
   }

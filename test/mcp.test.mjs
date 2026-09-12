@@ -34,9 +34,10 @@ for (const bundled of [false, true]) test(`MCP → WebSocket → plugin: full wo
   assert.equal(listed.tools.find(t => t.name === 'delete_node').annotations.destructiveHint, true);
   assert.equal((await call('get_document')).isError, true);
   const connection = data(await call('get_connection'));
+  const automaticToken = 'c'.repeat(64);
   if (bundled) {
     assert.equal(connection.pairingMode, 'automatic');
-    assert.equal(connection.pairingCode, 'c'.repeat(64));
+    assert.equal(connection.pairingCode, undefined);
   }
   const manifest = JSON.parse(await readFile(new URL('../plugin/manifest.json', import.meta.url), 'utf8'));
   const endpoint = new URL(manifest.networkAccess.devAllowedDomains[0]);
@@ -48,7 +49,7 @@ for (const bundled of [false, true]) test(`MCP → WebSocket → plugin: full wo
   t.after(() => socket.terminate());
   await once(socket, 'open');
   const ready = once(socket, 'message');
-  socket.send(JSON.stringify({ type: 'hello', token: connection.pairingCode }));
+  socket.send(JSON.stringify({ type: 'hello', token: bundled ? automaticToken : connection.pairingCode }));
   await ready;
   const h = pluginHarness();
   let dispatchCount = 0;

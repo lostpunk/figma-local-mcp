@@ -366,7 +366,7 @@ figma.showUI(__html__, { width: 380, height: 480, themeColors: true });
 let busy = false;
 function publishDocument() {
   figma.ui.postMessage({ type: 'document', document: { name: figma.root.name, page: figma.currentPage.name,
-    pluginVersion: '0.6.2', capabilities: getCapabilities() } });
+    pluginVersion: '0.6.3', capabilities: getCapabilities() } });
 }
 figma.on('currentpagechange', publishDocument);
 figma.ui.onmessage = async (message: any) => {

@@ -18,8 +18,8 @@ test('installation key survives bridge restarts and still requires authenticatio
   for (let i = 0; i < 2; i++) {
     const bridge = await createBridge({ port: 0, installationToken });
     try {
-      assert.equal(bridge.info().pairingCode, installationToken);
       assert.equal(bridge.info().pairingMode, 'automatic');
+      assert.equal(bridge.info().pairingCode, undefined);
       await pair(bridge, installationToken);
       assert.equal(bridge.info().connected, true);
     } finally { await bridge.close(); }

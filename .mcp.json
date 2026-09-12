@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "figma_local": {
+      "command": "node",
+      "args": ["./runtime/server.mjs"],
+      "cwd": "."
+    }
+  }
+}

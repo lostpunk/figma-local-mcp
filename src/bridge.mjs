@@ -69,9 +69,10 @@ export async function createBridge({ port = 3055, timeoutMs = 30000, installatio
   });
   return {
     info() {
+      const automatic = Boolean(installationToken);
       return { connected: peer?.readyState === WebSocket.OPEN, port: wss.address().port,
-        pairingCode: token, pairingMode: installationToken ? 'automatic' : 'manual', document,
-        instructions: installationToken
+        ...(automatic ? {} : { pairingCode: token }), pairingMode: automatic ? 'automatic' : 'manual', document,
+        instructions: automatic
           ? 'Run the plugin imported from generated/figma-plugin/manifest.json. It connects automatically. Keep its window open.'
           : 'Open the development plugin in Figma Desktop and paste pairingCode. Keep its window open.' };
     },

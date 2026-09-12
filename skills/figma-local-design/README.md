@@ -1,4 +1,4 @@
-# 📦 figma-local-design · v1.0.0
+# 📦 figma-local-design · v0.6.3
 
 👤 **Автор:** vit-v-matveev
 

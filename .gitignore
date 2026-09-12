@@ -6,7 +6,6 @@ __pycache__/
 .env
 .env.*
 *.auth
-.mcp.json
 .skill-install.json
 skills/**/.skillstore-meta.json
 skills/**/installation.json
