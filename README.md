@@ -18,6 +18,20 @@ MCP-клиент → stdio → Node.js MCP → WebSocket 127.0.0.1:3055
 
 Скачайте/передайте ZIP из `dist/`. Он содержит собранный сервер, Figma-плагин, скилл и исходники. Получателю нужны Node.js 22+ и Figma Desktop; устанавливать npm-зависимости не требуется.
 
+### Установка из GitHub
+
+Клон исходников предназначен для разработчиков и пользователей без доступа к SkillStore. Нужны Node.js 22+, npm и Python 3:
+
+```bash
+git clone https://github.com/lostpunk/figma-local-mcp.git
+cd figma-local-mcp
+npm ci
+npm run release
+node scripts/setup.mjs --codex
+```
+
+После setup импортируйте `generated/figma-plugin/manifest.json` в Figma Desktop и запустите плагин. Локальные ключи подключения создаются только на компьютере пользователя и не хранятся в GitHub.
+
 Из распакованной папки выполните:
 
 ```bash
