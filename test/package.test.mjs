@@ -30,3 +30,15 @@ test('portable archives exclude local SkillStore metadata', async t => {
   assert.ok(!entries.some(entry => entry.endsWith('/runtime-payload.json.gz') || entry.endsWith('/runtime-release.json')));
   assert.ok(!entries.some(entry => entry.endsWith('/.skillstore-meta.json') || entry.endsWith('/installation.json')));
 });
+
+test('SkillStore package removes deep external references from generated files only', async t => {
+  const packaged = spawnSync(process.execPath, [join(source, 'scripts/package-skillstore.mjs')], { cwd: source, encoding: 'utf8' });
+  assert.equal(packaged.status, 0, packaged.stderr);
+  const output = join(source, 'dist/skillstore/figma-local-design');
+  const runtime = await readFile(join(output, 'runtime/server.mjs'), 'utf8');
+  const notices = await readFile(join(output, 'runtime/THIRD_PARTY_NOTICES.md'), 'utf8');
+  const deepExternalReference = /https?:\/\/[^\s<>()\[\]{}]+(?:\/(?:blob|commit)\/|#[^\s<>()\[\]{}]+)/;
+  assert.doesNotMatch(runtime, deepExternalReference);
+  assert.doesNotMatch(notices, deepExternalReference);
+  assert.match(runtime, /createBridge/);
+});
