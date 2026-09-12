@@ -39,8 +39,8 @@ npm run release
 `release` запускает TypeScript-проверку, собирает Figma-плагин и Node-сервер с зависимостями, проверяет тесты, затем создаёт:
 
 ```text
-dist/figma-local-mcp-0.6.3.zip
-dist/figma-local-mcp-0.6.3.zip.sha256
+dist/figma-local-mcp-0.6.4.zip
+dist/figma-local-mcp-0.6.4.zip.sha256
 ```
 
 Получателю передавайте ZIP и при желании файл контрольной суммы. Архив уже включает `INSTALL.md`, `CUSTOMIZE.md` и исходники для дальнейших изменений. Ему не нужны `npm ci` и Python.
@@ -73,4 +73,4 @@ dist/figma-local-mcp-0.6.3.zip.sha256
 
 При передаче результатов проверок отделяйте фактически протестированное от предположений: в текущем окружении протестированы локальная сборка/протокол и имитация Plugin API; настоящий Figma Desktop и установка plugin bundle через UI требуют отдельной проверки.
 
-Сборка также создаёт assets/runtime-payload.json.gz и runtime-release.json внутри скилла. В payload намеренно нет skills/ (чтобы избежать рекурсивных архивов) и generated/ (локальные ключи). Bootstrap копирует текущие инструкции отдельно при развёртывании. scripts/package.py создаёт отдельный dist/figma-local-design-skill-0.6.3.zip из того же белого списка. Для HTTPS-распространения разместите runtime-payload.json.gz и передайте SHA256 из runtime-release.json; пользовательский адрес не подставляется автоматически.
+Сборка копирует в скилл открытые runtime/, plugin/, src/ и setup-скрипты. Исполняемый код нельзя прятать в gzip, base64 или иной непрозрачный payload: SkillStore должен иметь возможность статически проверить MCP-сервер и плагин. generated/ с локальными ключами в пакет не входит. scripts/package.py создаёт отдельный ZIP скилла из того же белого списка.

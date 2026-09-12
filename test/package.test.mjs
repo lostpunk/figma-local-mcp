@@ -24,5 +24,9 @@ test('portable archives exclude local SkillStore metadata', async t => {
   assert.equal(listed.status, 0, listed.stderr);
   const entries = JSON.parse(listed.stdout);
   assert.ok(entries.includes('figma-local-mcp/.mcp.json'));
+  assert.ok(entries.includes('figma-local-mcp/skills/figma-local-design/runtime/server.mjs'));
+  assert.ok(entries.includes('figma-local-mcp/skills/figma-local-design/plugin/code.js'));
+  assert.ok(entries.includes('figma-local-mcp/skills/figma-local-design/scripts/setup.mjs'));
+  assert.ok(!entries.some(entry => entry.endsWith('/runtime-payload.json.gz') || entry.endsWith('/runtime-release.json')));
   assert.ok(!entries.some(entry => entry.endsWith('/.skillstore-meta.json') || entry.endsWith('/installation.json')));
 });

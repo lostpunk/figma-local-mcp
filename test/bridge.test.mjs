@@ -52,13 +52,25 @@ test('bridge correlates responses and rejects overlapping requests', async t => 
   assert.deepEqual(await response, { id: '1:2' });
 });
 
-test('timeout invalidates session and makes edit uncertainty explicit', async t => {
+test('timeout keeps the paired session and waits for the late plugin result', async t => {
   const bridge = await createBridge({ port: 0, timeoutMs: 30 });
   t.after(() => bridge.close());
-  await pair(bridge);
-  await assert.rejects(bridge.request('update_node', {}), /outcome is unknown/);
-  assert.equal(bridge.info().connected, false);
-  await assert.rejects(bridge.request('get_document', {}), /not connected/);
+  const socket = await pair(bridge);
+  const received = once(socket, 'message');
+  const response = bridge.request('update_node', {});
+  const command = JSON.parse((await received)[0]);
+  await assert.rejects(response, /plugin remains connected/);
+  assert.equal(bridge.info().connected, true);
+  assert.equal(bridge.info().operation, 'timed_out_waiting_result');
+  await assert.rejects(bridge.request('get_document', {}), /previous Figma operation timed out/);
+  socket.send(JSON.stringify({ type: 'result', id: command.id, result: { completed: true } }));
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(bridge.info().operation, 'idle');
+  const nextMessage = once(socket, 'message');
+  const next = bridge.request('get_document', {});
+  const nextCommand = JSON.parse((await nextMessage)[0]);
+  socket.send(JSON.stringify({ type: 'result', id: nextCommand.id, result: { name: 'Test' } }));
+  assert.deepEqual(await next, { name: 'Test' });
 });
 
 test('second plugin cannot displace current session', async t => {

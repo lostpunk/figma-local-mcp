@@ -1,27 +1,29 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, cp, readFile, writeFile, mkdir, chmod, rm, access, realpath } from 'node:fs/promises';
+import { access, chmod, cp, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { join, delimiter } from 'node:path';
 import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
-import { gzipSync, gunzipSync } from 'node:zlib';
-import { createHash } from 'node:crypto';
-import { downloadPayload, validatePayload, installPayload } from '../skills/figma-local-design/scripts/install.mjs';
+import { installEmbedded } from '../skills/figma-local-design/scripts/install.mjs';
 
-const skillSource = new URL('../skills/figma-local-design/', import.meta.url);
-const digest = data => createHash('sha256').update(data).digest('hex');
+const source = new URL('../', import.meta.url);
+
 async function fixture(t) {
-  const directory = await realpath(await mkdtemp(join(tmpdir(), "figma bootstrap ' $ space-")));
+  const directory = await mkdtemp(join(tmpdir(), "figma bootstrap ' $ space-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const skillRoot = join(directory, 'skill');
-  await cp(skillSource, skillRoot, { recursive: true });
+  await cp(new URL('../skills/figma-local-design/', import.meta.url), skillRoot, { recursive: true });
+  for (const entry of ['package.json', 'runtime', 'plugin', 'src']) {
+    await cp(new URL(`../${entry}`, import.meta.url), join(skillRoot, entry), { recursive: true });
+  }
+  for (const name of ['setup.mjs', 'local-plugin.mjs']) {
+    await cp(new URL(`../scripts/${name}`, import.meta.url), join(skillRoot, 'scripts', name));
+  }
   await rm(join(skillRoot, 'installation.json'), { force: true });
-  const target = join(directory, 'runtime');
-  const buffer = await readFile(join(skillRoot, 'assets/runtime-payload.json.gz'));
-  return { directory, skillRoot, target, buffer, sha256: digest(buffer) };
+  return { directory, skillRoot, target: join(directory, 'runtime') };
 }
 
-test('standalone skill installs offline, preserves key on rerun and updates with a backup', async t => {
+test('standalone skill installs inspectable sources, preserves the key and updates with a backup', async t => {
   const f = await fixture(t);
   const env = { ...process.env, CODEX_HOME: join(f.directory, 'codex') };
   const run = (...args) => spawnSync(process.execPath, [join(f.skillRoot, 'scripts/install.mjs'), '--target', f.target, '--no-register', '--no-open', ...args], { encoding: 'utf8', env });
@@ -33,41 +35,26 @@ test('standalone skill installs offline, preserves key on rerun and updates with
   assert.equal(run().status, 0);
   assert.equal(JSON.parse(await readFile(keyPath, 'utf8')).token, key);
   assert.equal(JSON.parse(await readFile(join(f.skillRoot, 'installation.json'), 'utf8')).packageRoot, f.target);
-  const payload = JSON.parse(gunzipSync(f.buffer));
-  payload.files.push({ path: 'upgrade-note.txt', data: Buffer.from('New release').toString('base64') });
-  const updated = gzipSync(JSON.stringify(payload));
-  await assert.rejects(installPayload({ ...f, buffer: updated, sha256: digest(updated) }), /--update/);
-  const result = await installPayload({ ...f, buffer: updated, sha256: digest(updated), update: true });
-  assert.ok(result.backup);
+  const pkg = JSON.parse(await readFile(join(f.skillRoot, 'package.json'), 'utf8'));
+  pkg.version = '0.6.5';
+  await writeFile(join(f.skillRoot, 'package.json'), JSON.stringify(pkg, null, 2) + '\n');
+  await writeFile(join(f.target, '.skill-install.json'), JSON.stringify({ format: 'figma-local-install-v1', version: '0.6.3' }) + '\n');
+  const updated = run('--update');
+  assert.equal(updated.status, 0, updated.stderr);
   assert.equal(JSON.parse(await readFile(keyPath, 'utf8')).token, key);
-  assert.equal(await readFile(join(f.target, 'upgrade-note.txt'), 'utf8'), 'New release');
-  await access(join(result.backup, 'runtime/server.mjs'));
+  assert.equal(JSON.parse(await readFile(join(f.target, 'package.json'), 'utf8')).version, '0.6.5');
+  assert.equal(JSON.parse(await readFile(join(f.target, '.skill-install.json'), 'utf8')).format, 'figma-local-install-v2');
+  assert.match(updated.stdout, /Previous installation backed up to:/);
 });
 
-test('payload validation rejects tampering and path traversal before creating an installation', async t => {
+test('installer rejects symlinked runtime sources before changing a target', { skip: process.platform === 'win32' }, async t => {
   const f = await fixture(t);
-  assert.throws(() => validatePayload(f.buffer, '0'.repeat(64)), /SHA256 mismatch/);
-  const payload = JSON.parse(gunzipSync(f.buffer));
-  payload.files[0].path = '../escape';
-  const bad = gzipSync(JSON.stringify(payload));
-  await assert.rejects(installPayload({ ...f, buffer: bad, sha256: digest(bad) }), /Unsafe release path/);
+  await rm(join(f.skillRoot, 'runtime'), { recursive: true });
+  await cp(new URL('../runtime/', import.meta.url), join(f.skillRoot, 'runtime'), { recursive: true });
+  await rm(join(f.skillRoot, 'runtime/server.mjs'));
+  await import('node:fs/promises').then(({ symlink }) => symlink(join(f.directory, 'not-a-runtime'), join(f.skillRoot, 'runtime/server.mjs')));
+  await assert.rejects(installEmbedded({ source: f.skillRoot, target: f.target }), /incomplete|symlink/i);
   await assert.rejects(access(f.target), { code: 'ENOENT' });
-  await assert.rejects(access(join(f.directory, 'escape')), { code: 'ENOENT' });
-});
-
-test('HTTPS downloader follows a secure redirect, enforces limits and rejects downgrade', async () => {
-  const buffer = await readFile(new URL('../skills/figma-local-design/assets/runtime-payload.json.gz', import.meta.url));
-  const urls = [];
-  const downloaded = await downloadPayload('https://releases.example/asset', async (url, options) => {
-    urls.push(url);
-    assert.equal(options.redirect, 'manual');
-    return urls.length === 1 ? new Response(null, { status: 302, headers: { location: '/payload' } }) : new Response(buffer);
-  });
-  assert.deepEqual(downloaded, buffer);
-  assert.deepEqual(urls, ['https://releases.example/asset', 'https://releases.example/payload']);
-  await assert.rejects(downloadPayload('http://releases.example/asset'), /HTTPS/);
-  await assert.rejects(downloadPayload('https://releases.example/asset', async () => new Response(null, { status: 302, headers: { location: 'http://example.com/file' } })), /HTTPS/);
-  await assert.rejects(downloadPayload('https://releases.example/asset', async () => new Response(Buffer.alloc(8 * 1024 * 1024 + 1))), /8 MiB/);
 });
 
 test('standalone installer registers MCP without reinstalling or overwriting the skill', { skip: process.platform === 'win32' }, async t => {
@@ -89,6 +76,6 @@ else process.exit(2);
     encoding: 'utf8', env: { ...process.env, CODEX_HOME: join(f.directory, 'codex'), PATH: bin + delimiter + process.env.PATH, FIGMA_TEST_REGISTRY: registry },
   });
   assert.equal(result.status, 0, result.stderr);
-  assert.deepEqual(JSON.parse(await readFile(registry, 'utf8'))[0].transport.args, [join(f.target, 'runtime/server.mjs')]);
+  assert.deepEqual(JSON.parse(await readFile(registry, 'utf8'))[0].transport.args, [await realpath(join(f.target, 'runtime/server.mjs'))]);
   assert.equal(await readFile(join(f.skillRoot, 'custom-rule.md'), 'utf8'), 'Keep my rules');
 });

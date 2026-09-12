@@ -12,8 +12,9 @@ FILES = ['.codex-plugin/plugin.json', '.mcp.json', '.gitignore', 'package.json',
          'INSTALL.md', 'CUSTOMIZE.md', 'CONTRIBUTING.md', 'codex.example.toml']
 DIRECTORIES = ['src', 'plugin', 'runtime', 'scripts', 'test', 'examples']
 SKILL_ROOT = ROOT / 'skills' / 'figma-local-design'
-SKILL_FILES = ['SKILL.md', 'version.json', 'agents/openai.yaml', 'scripts/install.mjs']
-SKILL_DIRECTORIES = ['assets', 'references']
+SKILL_FILES = ['SKILL.md', 'version.json', 'agents/openai.yaml', 'package.json',
+               'scripts/install.mjs', 'scripts/setup.mjs', 'scripts/local-plugin.mjs']
+SKILL_DIRECTORIES = ['assets', 'references', 'runtime', 'plugin', 'src']
 FORBIDDEN_SKILL_PARTS = {'.github', '.git', '.skillstore-meta.json', 'installation.json'}
 
 def skill_inputs():

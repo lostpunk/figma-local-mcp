@@ -5,8 +5,16 @@ import { fileURLToPath } from 'node:url';
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const source = join(root, 'skills', 'figma-local-design');
 const output = join(root, 'dist', 'skillstore', 'figma-local-design');
-const files = ['SKILL.md', 'version.json', 'agents/openai.yaml', 'scripts/install.mjs'];
-const directories = ['assets', 'references'];
+const files = [
+  'SKILL.md',
+  'version.json',
+  'agents/openai.yaml',
+  'package.json',
+  'scripts/install.mjs',
+  'scripts/setup.mjs',
+  'scripts/local-plugin.mjs',
+];
+const directories = ['assets', 'references', 'runtime', 'plugin', 'src'];
 const forbidden = new Set(['.github', '.git', '.skillstore-meta.json', 'installation.json']);
 
 async function validate(directory) {
