@@ -1,0 +1,4 @@
+interface:
+  display_name: "Figma Local Design"
+  short_description: "Макеты, style guide и UI-правила через локальный MCP"
+  default_prompt: "Используй $figma-local-design: создай style guide и макет с учётом правил проекта."

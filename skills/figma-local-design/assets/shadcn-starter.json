@@ -1,0 +1,21 @@
+{
+  "name": "Product",
+  "colors": [
+    { "name": "background", "value": "#FFFFFF" },
+    { "name": "foreground", "value": "#18181B" },
+    { "name": "card", "value": "#FFFFFF" },
+    { "name": "card-foreground", "value": "#18181B" },
+    { "name": "primary", "value": "#18181B" },
+    { "name": "primary-foreground", "value": "#FAFAFA" },
+    { "name": "secondary", "value": "#F4F4F5" },
+    { "name": "secondary-foreground", "value": "#18181B" },
+    { "name": "muted", "value": "#F4F4F5" },
+    { "name": "muted-foreground", "value": "#52525B" },
+    { "name": "accent", "value": "#F4F4F5" },
+    { "name": "accent-foreground", "value": "#18181B" },
+    { "name": "destructive", "value": "#B91C1C" },
+    { "name": "border", "value": "#D4D4D8" },
+    { "name": "input", "value": "#71717A" },
+    { "name": "ring", "value": "#2563EB" }
+  ]
+}

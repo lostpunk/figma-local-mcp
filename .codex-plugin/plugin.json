@@ -1,0 +1,25 @@
+{
+  "name": "figma-local-mcp",
+  "version": "0.6.1",
+  "description": "Local Figma MCP with a design skill, configurable UI-library rules and style-guide creation.",
+  "author": {
+    "name": "Figma Local MCP contributors"
+  },
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Figma Local Design",
+    "shortDescription": "Style guides and layouts through a local Figma plugin.",
+    "longDescription": "Create and edit native layouts with local MCP, design tokens, components and configurable project rules. Includes a shadcn/ui reference profile. Requires Node.js and a running Figma development plugin.",
+    "developerName": "Figma Local MCP contributors",
+    "category": "Productivity",
+    "capabilities": [
+      "Read",
+      "Write"
+    ],
+    "defaultPrompt": [
+      "Создай style guide и экран через локальный Figma MCP.",
+      "Примени UI-библиотеку и правила дизайна моего проекта."
+    ]
+  },
+  "mcpServers": "./.mcp.json"
+}

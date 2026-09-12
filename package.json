@@ -1,0 +1,25 @@
+{
+  "name": "figma-local-mcp",
+  "version": "0.6.2",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "build": "tsc --noEmit && node build.mjs",
+    "start": "node src/server.mjs",
+    "test": "npm run build && node --test test/*.test.mjs",
+    "setup": "node scripts/setup.mjs",
+    "pack:skillstore": "npm run build && node scripts/package-skillstore.mjs",
+    "release": "npm test && node scripts/package-skillstore.mjs && python3 scripts/package.py"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "ws": "^8.18.0",
+    "zod": "^3.24.0"
+  },
+  "devDependencies": {
+    "@figma/plugin-typings": "^1.0.0",
+    "esbuild": "^0.25.0",
+    "typescript": "^5.7.0"
+  }
+}

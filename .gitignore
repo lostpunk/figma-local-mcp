@@ -1,0 +1,12 @@
+node_modules/
+.DS_Store
+dist/
+generated/
+__pycache__/
+.env
+.env.*
+*.auth
+.mcp.json
+.skill-install.json
+skills/**/.skillstore-meta.json
+skills/**/installation.json
