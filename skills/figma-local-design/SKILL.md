@@ -10,6 +10,9 @@ Work through the locally connected Figma plugin. This skill provides design deci
 ## Read only the relevant instructions
 
 - Setup, distribution, reconnecting: [setup.md](references/setup.md).
+- Errors, timeouts and local logs: [diagnostics.md](references/diagnostics.md).
+- Importing images/SVG, variants and prototypes: [assets-variants-prototypes.md](references/assets-variants-prototypes.md).
+- Manual Figma plugin import and hidden folders: [figma-plugin-install.md](references/figma-plugin-install.md).
 - Creating or editing layouts: [design-workflow.md](references/design-workflow.md).
 - Selecting rules, a UI library or a Figma kit: [project-rules.md](references/project-rules.md). Load only the selected profile. The default is [shadcn-ui.md](references/shadcn-ui.md).
 - Changing the server, plugin or skill: [maintaining.md](references/maintaining.md).
@@ -33,3 +36,5 @@ Use IDs returned by tools. `ref`/`parentRef` resolve only within one `create_sce
 Wait for each operation to finish before another. The bridge waits up to 120 seconds by default; `get_connection.operation` reports `running`, `timed_out_waiting_result` or `idle`. After a timeout, keep the plugin open and wait for its late result before retrying a write; reconnect only if that result never arrives. Inspect the file before a retry. There is no automatic cancellation or full transaction support. `create_scene` and `create_style_guide` attempt to remove new resources after errors; `update_node` may leave partial changes. Figma Undo is available.
 
 Report created/changed objects and actual previews. Distinguish real Figma checks from tests with a mocked Plugin API. Never claim an accessibility audit or functioning interaction based only on a static frame.
+
+On unexpected errors, read get_diagnostics before asking for a restart. Correlate requestId with operation_started, operation_failed and plugin_late_result. A timeout is not cancellation: check get_connection.operation and inspect the affected nodes before retrying.

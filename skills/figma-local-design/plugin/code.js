@@ -393,6 +393,275 @@
     }
   }
 
+  // plugin/extended.ts
+  var extendedCommands = /* @__PURE__ */ new Set([
+    "import_image",
+    "import_svg",
+    "create_component_set",
+    "set_instance_properties",
+    "set_prototype_link",
+    "set_prototype_start",
+    "move_component"
+  ]);
+  function pageOf(node) {
+    let current = node;
+    while (current && current.type !== "PAGE") current = current.parent;
+    if (!current) throw new Error("Node must belong to a page");
+    return current;
+  }
+  async function parentFor(args, helpers) {
+    var _a;
+    const parent = await helpers.getNode((_a = args.parentId) != null ? _a : figma.currentPage.id);
+    if (!["PAGE", "FRAME", "COMPONENT", "SECTION"].includes(parent.type)) throw new Error("Unsupported parent");
+    return parent;
+  }
+  function result(node) {
+    var _a;
+    return {
+      id: node.id,
+      name: node.name,
+      type: node.type,
+      parentId: (_a = node.parent) == null ? void 0 : _a.id,
+      x: node.x,
+      y: node.y,
+      width: node.width,
+      height: node.height
+    };
+  }
+  async function executeExtended(command, args, helpers) {
+    var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l, _m, _n, _o;
+    switch (command) {
+      case "move_component": {
+        const node = await helpers.getNode(args.nodeId);
+        const parent = await helpers.getNode(args.parentId);
+        if (node.type !== "COMPONENT" && node.type !== "COMPONENT_SET") throw new Error("Move a COMPONENT or whole COMPONENT_SET");
+        if (node.remote) throw new Error("Cannot move a remote component");
+        if (!["PAGE", "FRAME", "SECTION"].includes(parent.type)) throw new Error("Destination must be PAGE, FRAME or SECTION");
+        if (!Number.isFinite(args.x) || !Number.isFinite(args.y)) throw new Error("Explicit finite destination x/y are required");
+        for (let a = node.parent; a; a = a.parent) {
+          if (["INSTANCE", "COMPONENT", "COMPONENT_SET"].includes(a.type)) throw new Error("Move the whole component set or outer component; nested components cannot be extracted");
+        }
+        for (let a = parent; a; a = a.parent) {
+          if (a.id === node.id) throw new Error("Cannot move a component into its descendant");
+          if (["INSTANCE", "COMPONENT", "COMPONENT_SET"].includes(a.type)) throw new Error("Destination cannot be inside a component or instance");
+        }
+        const previous = { parentId: (_a = node.parent) == null ? void 0 : _a.id, x: node.x, y: node.y };
+        try {
+          parent.appendChild(node);
+          node.x = args.x;
+          node.y = args.y;
+          figma.commitUndo();
+          return __spreadProps(__spreadValues({}, result(node)), { previous, preservedId: true });
+        } catch (error) {
+          throw new Error(`${error instanceof Error ? error.message : String(error)}. Move may be partial; inspect ${node.id} or use Figma Undo.`);
+        }
+      }
+      case "import_image": {
+        const parent = args.nodeId ? void 0 : await parentFor(args, helpers);
+        const target = args.nodeId ? await helpers.getNode(args.nodeId) : void 0;
+        if (target && (target.type === "PAGE" || target.type === "DOCUMENT" || !("fills" in target))) throw new Error("nodeId must have editable fills");
+        if (target && target.type === "TEXT") throw new Error("Use a shape or frame as an image target");
+        if (typeof args.dataBase64 !== "string" || args.dataBase64.length > 11184812) throw new Error("Image payload is missing or too large");
+        const bytes = figma.base64Decode(args.dataBase64);
+        if (!bytes.length || bytes.length > 8 * 1024 * 1024) throw new Error("Image exceeds 8 MiB");
+        const image = figma.createImage(bytes);
+        const original = await image.getSizeAsync();
+        if (original.width > 4096 || original.height > 4096) throw new Error("Image exceeds 4096 pixels per side; resize it first");
+        const fill = { type: "IMAGE", imageHash: image.hash, scaleMode: args.scaleMode };
+        let node;
+        if (target && "fills" in target) {
+          target.fills = [fill];
+          node = target;
+        } else {
+          const created = figma.createRectangle();
+          try {
+            parent.appendChild(created);
+            const width = (_b = args.width) != null ? _b : args.height ? args.height * original.width / original.height : original.width;
+            const height = (_c = args.height) != null ? _c : width * original.height / original.width;
+            created.resize(width, height);
+            created.x = (_d = args.x) != null ? _d : 0;
+            created.y = (_e = args.y) != null ? _e : 0;
+            created.name = (_f = args.name) != null ? _f : "Image";
+            created.fills = [fill];
+            node = created;
+          } catch (error) {
+            created.remove();
+            throw error;
+          }
+        }
+        figma.commitUndo();
+        return __spreadProps(__spreadValues({}, result(node)), { imageHash: image.hash, original, replacedFill: !!target });
+      }
+      case "import_svg": {
+        const parent = await parentFor(args, helpers);
+        if (typeof args.svg !== "string" || args.svg.length > 1048576) throw new Error("SVG is missing or too large");
+        const node = figma.createNodeFromSvg(args.svg);
+        try {
+          parent.appendChild(node);
+          if (args.width !== void 0) {
+            if (node.width <= 0) throw new Error("SVG has no usable width");
+            node.rescale(args.width / node.width);
+          }
+          node.name = (_g = args.name) != null ? _g : "SVG";
+          node.x = (_h = args.x) != null ? _h : 0;
+          node.y = (_i = args.y) != null ? _i : 0;
+          figma.commitUndo();
+          return __spreadProps(__spreadValues({}, result(node)), { childCount: node.children.length });
+        } catch (error) {
+          node.remove();
+          throw error;
+        }
+      }
+      case "create_component_set": {
+        const parent = await parentFor(args, helpers);
+        const sources = [];
+        for (const variant of args.variants) {
+          const node = await helpers.getNode(variant.componentId);
+          if (node.type !== "COMPONENT" || node.remote) throw new Error("Each source must be a local COMPONENT");
+          let ancestor = parent;
+          while (ancestor) {
+            if (ancestor.id === node.id) throw new Error("Cannot create variants inside their own source component");
+            ancestor = ancestor.parent;
+          }
+          sources.push(node);
+        }
+        const clones = [];
+        let set;
+        try {
+          for (let i = 0; i < sources.length; i++) {
+            const clone = sources[i].clone();
+            clones.push(clone);
+            parent.appendChild(clone);
+            clone.name = Object.keys(args.variants[i].properties).sort().map((key) => `${key}=${args.variants[i].properties[key]}`).join(", ");
+          }
+          set = figma.combineAsVariants(clones, parent);
+          set.name = args.name;
+          set.layoutMode = "HORIZONTAL";
+          set.itemSpacing = args.spacing;
+          set.paddingTop = set.paddingBottom = set.paddingLeft = set.paddingRight = 24;
+          set.primaryAxisSizingMode = "AUTO";
+          set.counterAxisSizingMode = "AUTO";
+          set.x = args.x;
+          set.y = args.y;
+          figma.commitUndo();
+          return __spreadProps(__spreadValues({}, result(set)), {
+            componentPropertyDefinitions: set.componentPropertyDefinitions,
+            variants: clones.map((node, i) => ({ id: node.id, sourceComponentId: sources[i].id, properties: args.variants[i].properties })),
+            note: "Variant components are copies; source components and their instances are unchanged."
+          });
+        } catch (error) {
+          const failures = [];
+          for (const node of [...clones, set]) if (node && !node.removed) {
+            try {
+              node.remove();
+            } catch (e) {
+              failures.push(node.id);
+            }
+          }
+          throw new Error(`${error instanceof Error ? error.message : String(error)}. ${failures.length ? "Cleanup incomplete: " + failures.join(", ") : "New variant resources cleaned up."}`);
+        }
+      }
+      case "set_instance_properties": {
+        const node = await helpers.getNode(args.nodeId);
+        if (node.type !== "INSTANCE") throw new Error("nodeId must be an INSTANCE");
+        const main = await node.getMainComponentAsync();
+        if (!main) throw new Error("Main component is unavailable");
+        const definitions = ((_j = main.parent) == null ? void 0 : _j.type) === "COMPONENT_SET" ? main.parent.componentPropertyDefinitions : main.componentPropertyDefinitions;
+        for (const [key, value] of Object.entries(args.properties)) {
+          const def = definitions[key];
+          if (!def || !node.componentProperties[key]) throw new Error(`Unknown property: ${key}. Use exact names from get_node.`);
+          if (def.type === "BOOLEAN" ? typeof value !== "boolean" : typeof value !== "string") throw new Error(`Invalid value type for ${key}`);
+          if (def.type === "VARIANT" && !((_k = def.variantOptions) == null ? void 0 : _k.includes(value))) throw new Error(`Unknown variant value for ${key}`);
+          if (!["BOOLEAN", "TEXT", "VARIANT"].includes(def.type)) throw new Error("Only BOOLEAN, TEXT and VARIANT properties are supported");
+        }
+        if (Object.keys(args.properties).some((key) => definitions[key].type === "TEXT")) {
+          const texts = node.findAllWithCriteria({ types: ["TEXT"] });
+          for (const text of texts) {
+            const fonts = text.characters.length ? [...text.getRangeAllFontNames(0, text.characters.length)] : [];
+            if (text.fontName !== figma.mixed) fonts.push(text.fontName);
+            for (const font of fonts) await figma.loadFontAsync(font);
+          }
+        }
+        try {
+          node.setProperties(args.properties);
+        } catch (error) {
+          figma.commitUndo();
+          throw new Error(`${String(error)}. Inspect the instance or use Undo; overrides may have changed.`);
+        }
+        figma.commitUndo();
+        return { id: node.id, componentProperties: node.componentProperties, variantProperties: node.variantProperties };
+      }
+      case "set_prototype_link": {
+        const node = await helpers.getNode(args.nodeId);
+        if (!("setReactionsAsync" in node)) throw new Error("Source node does not support prototype reactions");
+        const previous = [...node.reactions];
+        const matching = previous.filter((r) => {
+          var _a2;
+          return ((_a2 = r.trigger) == null ? void 0 : _a2.type) === args.trigger;
+        });
+        if (matching.length && !args.replaceExisting) throw new Error("This trigger already has reactions. Inspect get_node; set replaceExisting=true to replace only this trigger.");
+        let action;
+        if (args.action === "BACK" || args.action === "CLOSE") {
+          if (args.destinationId || args.transition !== "INSTANT") throw new Error("BACK/CLOSE do not accept a destination or transition");
+          action = { type: args.action };
+        } else {
+          if (!args.destinationId) throw new Error("destinationId is required");
+          const destination = await helpers.getNode(args.destinationId);
+          if (pageOf(destination).id !== pageOf(node).id) throw new Error("Prototype source and destination must be on the same page");
+          if (args.action === "CHANGE_TO") {
+            let component = node;
+            while (component && component.type !== "COMPONENT") component = component.parent;
+            if (!component || ((_l = component.parent) == null ? void 0 : _l.type) !== "COMPONENT_SET" || destination.type !== "COMPONENT" || ((_m = destination.parent) == null ? void 0 : _m.id) !== component.parent.id || destination.id === component.id) {
+              throw new Error("CHANGE_TO requires different variants in the same component set");
+            }
+          } else if (destination.type !== "FRAME" || ((_n = destination.parent) == null ? void 0 : _n.type) !== "PAGE") {
+            throw new Error("NAVIGATE/OVERLAY destination must be a top-level FRAME");
+          }
+          if (args.action === "NAVIGATE") {
+            let ancestor = node;
+            while (ancestor && ancestor.type !== "PAGE") {
+              if (ancestor.id === destination.id) {
+                throw new Error("NAVIGATE destination must be a different screen from the source. No reactions were changed.");
+              }
+              ancestor = ancestor.parent;
+            }
+          }
+          action = {
+            type: "NODE",
+            destinationId: destination.id,
+            navigation: args.action,
+            transition: args.transition === "INSTANT" ? null : { type: args.transition, easing: { type: "EASE_OUT" }, duration: args.durationMs / 1e3 },
+            resetScrollPosition: true
+          };
+        }
+        const reactions = [...previous.filter((r) => {
+          var _a2;
+          return ((_a2 = r.trigger) == null ? void 0 : _a2.type) !== args.trigger;
+        }), { trigger: { type: args.trigger }, actions: [action] }];
+        try {
+          await node.setReactionsAsync(reactions);
+        } catch (error) {
+          figma.commitUndo();
+          throw new Error(`${String(error)}. Inspect reactions or use Undo before retrying.`);
+        }
+        figma.commitUndo();
+        return { id: node.id, reactions: node.reactions };
+      }
+      case "set_prototype_start": {
+        const frame = await helpers.getNode(args.frameId);
+        if (frame.type !== "FRAME" || ((_o = frame.parent) == null ? void 0 : _o.type) !== "PAGE") throw new Error("Prototype start must be a top-level FRAME");
+        const page = frame.parent;
+        const starts = page.flowStartingPoints.filter((s) => s.nodeId !== frame.id);
+        if (starts.some((s) => s.name === args.name)) throw new Error("A different prototype flow already uses this name");
+        page.flowStartingPoints = [...starts, { nodeId: frame.id, name: args.name }];
+        figma.commitUndo();
+        return { pageId: page.id, flowStartingPoints: page.flowStartingPoints };
+      }
+      default:
+        throw new Error(`Unknown extended command: ${command}`);
+    }
+  }
+
   // plugin/code.ts
   var properties = [
     "x",
@@ -437,6 +706,10 @@
     "constraints",
     "boundVariables",
     "componentProperties",
+    "componentPropertyDefinitions",
+    "variantProperties",
+    "reactions",
+    "flowStartingPoints",
     "textStyleId"
   ];
   function clean(value) {
@@ -445,33 +718,34 @@
     return JSON.parse(JSON.stringify(value, (_key, v) => typeof v === "symbol" ? { mixed: true } : v));
   }
   function summarize(node, depth, budget) {
-    var _a;
+    var _a, _b;
     budget.left--;
-    const result = { id: node.id, type: node.type, name: node.name, parentId: (_a = node.parent) == null ? void 0 : _a.id };
+    const result2 = { id: node.id, type: node.type, name: node.name, parentId: (_a = node.parent) == null ? void 0 : _a.id };
     const source = node;
     for (const key of properties) {
+      if (key === "componentPropertyDefinitions" && node.type === "COMPONENT" && ((_b = node.parent) == null ? void 0 : _b.type) === "COMPONENT_SET") continue;
       if (key in node) {
         const value = source[key];
         if (key === "characters" && typeof value === "string" && value.length > 1e4) {
-          result[key] = value.slice(0, 1e4);
-          result.charactersTruncated = true;
-          result.characterCount = value.length;
-        } else result[key] = clean(value);
+          result2[key] = value.slice(0, 1e4);
+          result2.charactersTruncated = true;
+          result2.characterCount = value.length;
+        } else result2[key] = clean(value);
       }
     }
     if ("children" in node) {
       const children = node.children;
-      result.childCount = children.length;
-      result.children = [];
+      result2.childCount = children.length;
+      result2.children = [];
       if (depth > 0) {
         for (const child of children) {
           if (budget.left <= 0) break;
-          result.children.push(summarize(child, depth - 1, budget));
+          result2.children.push(summarize(child, depth - 1, budget));
         }
       }
-      result.childrenTruncated = result.children.length < children.length;
+      result2.childrenTruncated = result2.children.length < children.length;
     }
-    return result;
+    return result2;
   }
   async function getNode(id) {
     const node = await figma.getNodeByIdAsync(id);
@@ -490,7 +764,7 @@
     }
     return node;
   }
-  function pageOf(node) {
+  function pageOf2(node) {
     let parent = node;
     while (parent && parent.type !== "PAGE") parent = parent.parent;
     if (!parent) throw new Error("Node is not attached to a page");
@@ -651,6 +925,7 @@
   }
   async function execute(command, args) {
     var _a, _b, _c, _d, _e, _f, _g, _h;
+    if (extendedCommands.has(command)) return executeExtended(command, args, { getNode });
     if (designCommands.has(command)) return executeDesignCommand(command, args, { getNode, applyProps, createNode });
     const budget = { left: (_a = args.maxNodes) != null ? _a : 200 };
     switch (command) {
@@ -738,8 +1013,8 @@
           seen.add(id);
           nodes.push(node);
         }
-        const page = pageOf(parent);
-        if (nodes.some((node) => pageOf(node).id !== page.id)) throw new Error("All nodes and the parent must belong to the same page");
+        const page = pageOf2(parent);
+        if (nodes.some((node) => pageOf2(node).id !== page.id)) throw new Error("All nodes and the parent must belong to the same page");
         let ancestor = parent;
         while (ancestor) {
           if (seen.has(ancestor.id)) throw new Error("Cannot move a node into its own descendant");
@@ -807,8 +1082,8 @@
       case "set_selection": {
         const nodes = [];
         for (const id of args.nodeIds) nodes.push(requireScene(await getNode(id)));
-        const page = nodes.length ? pageOf(nodes[0]) : figma.currentPage;
-        if (nodes.some((node) => pageOf(node).id !== page.id)) throw new Error("All selected nodes must belong to the same page");
+        const page = nodes.length ? pageOf2(nodes[0]) : figma.currentPage;
+        if (nodes.some((node) => pageOf2(node).id !== page.id)) throw new Error("All selected nodes must belong to the same page");
         await figma.setCurrentPageAsync(page);
         page.selection = nodes;
         if (args.focus && nodes.length) figma.viewport.scrollAndZoomIntoView(nodes);
@@ -839,7 +1114,7 @@
     figma.ui.postMessage({ type: "document", document: {
       name: figma.root.name,
       page: figma.currentPage.name,
-      pluginVersion: "0.6.4",
+      pluginVersion: "0.7.4",
       capabilities: getCapabilities()
     } });
   }
@@ -880,8 +1155,8 @@
     }
     busy = true;
     try {
-      const result = await execute(message.command, (_a = message.args) != null ? _a : {});
-      figma.ui.postMessage({ type: "result", id: message.id, result });
+      const result2 = await execute(message.command, (_a = message.args) != null ? _a : {});
+      figma.ui.postMessage({ type: "result", id: message.id, result: result2 });
     } catch (error) {
       figma.ui.postMessage({ type: "result", id: message.id, error: error instanceof Error ? error.message : String(error) });
     } finally {

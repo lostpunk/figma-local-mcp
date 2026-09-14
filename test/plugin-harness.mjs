@@ -20,7 +20,7 @@ export function pluginHarness() {
         nodes.delete(this.id);
       },
     };
-    if (['DOCUMENT', 'PAGE', 'FRAME', 'COMPONENT', 'INSTANCE'].includes(type)) {
+    if (['DOCUMENT', 'PAGE', 'FRAME', 'COMPONENT', 'COMPONENT_SET', 'INSTANCE'].includes(type)) {
       result.children = [];
       result.appendChild = child => {
         if (child.parent) child.parent.children.splice(child.parent.children.indexOf(child), 1);
@@ -35,8 +35,9 @@ export function pluginHarness() {
       };
     }
     if (type === 'PAGE') {
-      result.selection = [];
+      result.flowStartingPoints = [];
       result.backgrounds = [];
+      result.selection = [];
       result.loadAsync = async () => { result.loaded = true; };
     } else if (type !== 'DOCUMENT') {
       Object.assign(result, { x: 0, y: 0, width: 100, height: 100, rotation: 0,
@@ -46,6 +47,8 @@ export function pluginHarness() {
           else delete this.boundVariables[field];
         },
         visible: true, locked: false, opacity: 1, fills: [], strokes: [], strokeWeight: 1,
+        reactions: [],
+        async setReactionsAsync(reactions) { this.reactions = reactions; },
         absoluteBoundingBox: { x: 0, y: 0, width: 100, height: 100 },
         resize(width, height) { this.width = width; this.height = height; },
         async exportAsync(settings) {
@@ -74,7 +77,36 @@ export function pluginHarness() {
       });
     }
     nodes.set(result.id, result);
-    if (type === 'COMPONENT') result.createInstance = () => node('INSTANCE', result.name, figma.currentPage);
+    result.clone = () => {
+      const copy = node(type, result.name, result.parent);
+      for (const key of ['width', 'height', 'x', 'y', 'fills', 'strokes', 'characters', 'fontName']) {
+        if (key in result) copy[key] = JSON.parse(JSON.stringify(result[key]));
+      }
+      for (const child of [...(result.children ?? [])]) copy.appendChild(child.clone());
+      return copy;
+    };
+    if (type === 'COMPONENT') {
+      result.componentPropertyDefinitions = {};
+      result.createInstance = () => {
+        const instance = node('INSTANCE', result.name, figma.currentPage);
+        instance.getMainComponentAsync = async () => result;
+        const definitions = result.parent?.type === 'COMPONENT_SET' ? result.parent.componentPropertyDefinitions : result.componentPropertyDefinitions;
+        instance.componentProperties = Object.fromEntries(Object.entries(definitions).map(([key, def]) => [key, { type: def.type, value: result.variantProperties?.[key] ?? def.defaultValue }]));
+        instance.variantProperties = { ...result.variantProperties };
+        instance.setProperties = props => {
+          for (const [key, value] of Object.entries(props)) {
+            instance.componentProperties[key].value = value;
+            if (instance.componentProperties[key].type === 'VARIANT') instance.variantProperties[key] = value;
+          }
+        };
+        instance.findAllWithCriteria = ({ types }) => {
+          const found = [];
+          function visit(n) { for (const child of n.children ?? []) { if (types.includes(child.type)) found.push(child); visit(child); } }
+          visit(instance); return found;
+        };
+        return instance;
+      };
+    }
     parent?.appendChild(result);
     return result;
   }
@@ -124,15 +156,34 @@ export function pluginHarness() {
       },
     },
     createFrame: () => node('FRAME', 'Frame', figma.currentPage),
+    combineAsVariants(components, parent) {
+      const set = node('COMPONENT_SET', 'Variants', parent);
+      set.componentPropertyDefinitions = {};
+      for (const component of components) {
+        component.variantProperties = Object.fromEntries(component.name.split(', ').map(part => part.split('=')));
+        for (const [key, value] of Object.entries(component.variantProperties)) {
+          const def = set.componentPropertyDefinitions[key] ??= { type: 'VARIANT', defaultValue: value, variantOptions: [] };
+          if (!def.variantOptions.includes(value)) def.variantOptions.push(value);
+        }
+        set.appendChild(component);
+      }
+      return set;
+    },
+    createImage() { return { hash: 'image-hash', async getSizeAsync() { return { width: 200, height: 100 }; } }; },
+    createNodeFromSvg() {
+      const frame = node('FRAME', 'SVG', figma.currentPage);
+      node('VECTOR', 'Path', frame);
+      frame.rescale = scale => { frame.width *= scale; frame.height *= scale; };
+      return frame;
+    },
     createRectangle: () => node('RECTANGLE', 'Rectangle', figma.currentPage),
     createEllipse: () => node('ELLIPSE', 'Ellipse', figma.currentPage),
     createText: () => node('TEXT', 'Text', figma.currentPage),
-    base64Decode: value => new Uint8Array(Buffer.from(value, 'base64')),
-    createImage(bytes) { return { hash: `image:${Buffer.from(bytes).toString('hex')}` }; },
     commitUndo() { undoCount++; },
     async setCurrentPageAsync(page) { figma.currentPage = page; },
     viewport: { scrollAndZoomIntoView() {} },
     base64Encode: bytes => Buffer.from(bytes).toString('base64'),
+    base64Decode: value => new Uint8Array(Buffer.from(value, 'base64')),
   };
   vm.runInNewContext(readFileSync(new URL('../plugin/code.js', import.meta.url), 'utf8'), {
     figma, __html__: '', console,

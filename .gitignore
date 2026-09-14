@@ -9,3 +9,7 @@ __pycache__/
 .skill-install.json
 skills/**/.skillstore-meta.json
 skills/**/installation.json
+
+artifacts/
+backups/
+.figma-design.json

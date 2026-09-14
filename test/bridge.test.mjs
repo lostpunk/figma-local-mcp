@@ -52,8 +52,10 @@ test('bridge correlates responses and rejects overlapping requests', async t => 
   assert.deepEqual(await response, { id: '1:2' });
 });
 
-test('timeout keeps the paired session and waits for the late plugin result', async t => {
-  const bridge = await createBridge({ port: 0, timeoutMs: 30 });
+test('timeout keeps the paired session and waits for the late plugin result', { timeout: 3000 }, async t => {
+  const events = [];
+  const lateReceived = Promise.withResolvers();
+  const bridge = await createBridge({ port: 0, timeoutMs: 30, diagnostics: { record: (level, event, fields) => { events.push({ level, event, ...fields }); if (event === 'plugin_late_result') lateReceived.resolve(); } } });
   t.after(() => bridge.close());
   const socket = await pair(bridge);
   const received = once(socket, 'message');
@@ -64,13 +66,20 @@ test('timeout keeps the paired session and waits for the late plugin result', as
   assert.equal(bridge.info().operation, 'timed_out_waiting_result');
   await assert.rejects(bridge.request('get_document', {}), /previous Figma operation timed out/);
   socket.send(JSON.stringify({ type: 'result', id: command.id, result: { completed: true } }));
-  await new Promise(resolve => setImmediate(resolve));
+  await lateReceived.promise;
   assert.equal(bridge.info().operation, 'idle');
   const nextMessage = once(socket, 'message');
   const next = bridge.request('get_document', {});
   const nextCommand = JSON.parse((await nextMessage)[0]);
   socket.send(JSON.stringify({ type: 'result', id: nextCommand.id, result: { name: 'Test' } }));
   assert.deepEqual(await next, { name: 'Test' });
+  const failed = events.find(e => e.code === 'TIMEOUT');
+  const late = events.find(e => e.event === 'plugin_late_result');
+  assert.equal(failed.requestId, command.id);
+  assert.equal(late.requestId, command.id);
+  assert.equal(late.command, 'update_node');
+  assert.equal(late.outcome, 'plugin_completed');
+  assert.ok(late.durationMs >= failed.durationMs);
 });
 
 test('second plugin cannot displace current session', async t => {

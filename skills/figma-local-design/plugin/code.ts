@@ -1,5 +1,6 @@
 import { designCommands, executeDesignCommand } from './design-system';
 import { getCapabilities, setDeclaredPlan } from './capabilities';
+import { extendedCommands, executeExtended } from './extended';
 type Args = Record<string, any>;
 type Json = Record<string, any>;
 const properties = [
@@ -12,7 +13,7 @@ const properties = [
   'itemSpacing', 'paddingTop', 'paddingBottom', 'paddingLeft', 'paddingRight',
   'primaryAxisAlignItems', 'counterAxisAlignItems', 'primaryAxisSizingMode',
   'counterAxisSizingMode', 'clipsContent', 'constraints', 'boundVariables',
-  'componentProperties', 'textStyleId',
+  'componentProperties', 'componentPropertyDefinitions', 'variantProperties', 'reactions', 'flowStartingPoints', 'textStyleId',
 ];
 
 function clean(value: any): any {
@@ -25,6 +26,7 @@ function summarize(node: BaseNode, depth: number, budget: { left: number }): Jso
   const result: Json = { id: node.id, type: node.type, name: node.name, parentId: node.parent?.id };
   const source = node as any;
   for (const key of properties) {
+    if (key === 'componentPropertyDefinitions' && node.type === 'COMPONENT' && node.parent?.type === 'COMPONENT_SET') continue;
     if (key in node) {
       const value = source[key];
       if (key === 'characters' && typeof value === 'string' && value.length > 10000) {
@@ -191,6 +193,7 @@ async function createNode(args: Args): Promise<SceneNode> {
   } catch (error) { node.remove(); throw error; }
 }
 async function execute(command: string, args: Args): Promise<any> {
+  if (extendedCommands.has(command)) return executeExtended(command, args, { getNode });
   if (designCommands.has(command)) return executeDesignCommand(command, args, { getNode, applyProps, createNode });
   const budget = { left: args.maxNodes ?? 200 };
   switch (command) {
@@ -366,7 +369,7 @@ figma.showUI(__html__, { width: 380, height: 480, themeColors: true });
 let busy = false;
 function publishDocument() {
   figma.ui.postMessage({ type: 'document', document: { name: figma.root.name, page: figma.currentPage.name,
-    pluginVersion: '0.6.4', capabilities: getCapabilities() } });
+    pluginVersion: '0.7.4', capabilities: getCapabilities() } });
 }
 figma.on('currentpagechange', publishDocument);
 figma.ui.onmessage = async (message: any) => {

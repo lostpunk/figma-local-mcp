@@ -11,6 +11,7 @@
   #disconnect { background: #666; }
   #status { margin-top: 16px; overflow-wrap: anywhere; }
   #activity { opacity: .7; font-size: 11px; }
+  #diagnostic-log { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 180px; overflow: auto; font: 10px/1.4 monospace; user-select: text; }
 </style>
 <h1>Figma Local MCP</h1>
 <p id="intro">Откройте <b>get_connection</b> в MCP-клиенте и вставьте код подключения.</p>
@@ -32,6 +33,10 @@
   <option value="enterprise">Enterprise</option>
 </select>
 <p id="page-budget">Тариф недоступен через Plugin API. Можно указать его вручную.</p>
+<details><summary>Журнал событий и ошибок</summary>
+<p>Последние 50 событий этого запуска. Постоянные логи: get_diagnostics в MCP.</p>
+<pre id="diagnostic-log" aria-label="Журнал диагностики"></pre>
+</details>
 <script>
   const installationToken = '';
   const status = document.getElementById('status');
@@ -40,10 +45,29 @@
   const disconnect = document.getElementById('disconnect');
   const filePlan = document.getElementById('file-plan');
   const pageBudget = document.getElementById('page-budget');
+  const diagnosticLog = document.getElementById('diagnostic-log');
+  const history = [];
+  const lateResults = [];
+  function safeLogText(value) {
+    if (value != null && !['string', 'number', 'boolean'].includes(typeof value)) return '[unsupported metadata]';
+    return String(value ?? '').slice(0, 8000)
+      .replace(/(?:https?|wss?):\/\/[^\s]+/gi, '[url]')
+      .replace(/(?:[A-Za-z]:\\|\/(?:Users|home|private|tmp|var)\/)[^\s]+/g, '[path]')
+      .replace(/\b(?:token|pairingCode|authorization|password)\s*[:=]\s*\S+/gi, '[secret]')
+      .replace(/[A-Za-z0-9+/=_-]{48,}/g, '[redacted]')
+      .replace(/[\x00-\x1f\x7f]/g, ' ').slice(0, 1000);
+  }
+  function journal(event, detail = '') {
+    history.push(new Date().toISOString() + ' ' + event + ' ' + safeLogText(detail));
+    if (history.length > 50) history.shift();
+    if (diagnosticLog) diagnosticLog.textContent = history.join('\n');
+  }
   filePlan.onchange = () => parent.postMessage({ pluginMessage: { type: 'set-plan', plan: filePlan.value } }, '*');
   let socket;
   let documentInfo;
   let activeRequest;
+  let activeCommand;
+  let activeStartedAt;
   let responseSocket;
   let retryTimer;
   let retryDelay = 1000;
@@ -82,11 +106,16 @@
         status.textContent = 'Подключено. MCP может читать и редактировать этот файл.';
         disconnect.hidden = false;
         document.getElementById('token').value = '';
+        journal('CONNECTED');
+        while (lateResults.length) current.send(JSON.stringify(lateResults.shift()));
       } else if (message.type === 'command') {
         if (activeRequest) {
           current.send(JSON.stringify({ type: 'result', id: message.id, error: 'Plugin busy' })); return;
         }
         activeRequest = message.id;
+        activeCommand = message.command;
+        activeStartedAt = Date.now();
+        journal('START', activeCommand + ' id=' + activeRequest);
         filePlan.disabled = true;
         responseSocket = current;
         activity.textContent = 'Выполняется: ' + message.command;
@@ -95,6 +124,7 @@
     };
     current.onclose = event => {
       if (socket !== current) return;
+      journal('DISCONNECTED', 'code=' + event.code + (activeRequest ? ' id=' + activeRequest + ' outcome=unknown' : ''));
       status.textContent = 'Отключено' + (event.reason ? ': ' + event.reason : '. Вызовите get_connection и подключитесь снова.');
       connect.disabled = false;
       disconnect.hidden = true;
@@ -105,7 +135,7 @@
         scheduleReconnect();
       }
     };
-    current.onerror = () => { if (socket === current) status.textContent = 'Нет соединения с локальным MCP на порту 3055'; };
+    current.onerror = () => { if (socket === current) { status.textContent = 'Нет соединения с локальным MCP на порту 3055'; journal('SOCKET_ERROR'); } };
   }
   connect.onclick = () => { stopped = false; connectToBridge(); };
   disconnect.onclick = () => {
@@ -168,16 +198,27 @@
       if (socket === authenticatedSocket && socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'document', document: documentInfo }));
       if (installationToken && !socket && !stopped) connectToBridge();
     }
-    if (message.type === 'policy-error') { pageBudget.textContent = message.error; parent.postMessage({ pluginMessage: { type: 'init' } }, '*'); }
+    if (message.type === 'policy-error') { journal('POLICY_ERROR', message.error); pageBudget.textContent = message.error; parent.postMessage({ pluginMessage: { type: 'init' } }, '*'); }
     if (message.type === 'result' && activeRequest && message.id === activeRequest) {
+      const durationMs = Date.now() - activeStartedAt;
+      const delivered = responseSocket?.readyState === WebSocket.OPEN;
+      journal(delivered ? (message.error ? 'ERROR' : 'DONE') : 'LATE_RESULT', activeCommand + ' id=' + activeRequest + ' ms=' + durationMs + (message.error ? ' ' + safeLogText(message.error) : ' completed'));
+      if (!delivered) {
+        lateResults.push({ type: 'diagnostic', event: 'late_result', id: activeRequest,
+          command: activeCommand, durationMs, failed: typeof message.error === 'string', error: message.error ? safeLogText(message.error) : undefined });
+        if (lateResults.length > 32) lateResults.shift();
+      }
       if (responseSocket?.readyState === WebSocket.OPEN) responseSocket.send(JSON.stringify(message));
       activeRequest = undefined;
+      activeCommand = undefined;
       filePlan.disabled = false;
       responseSocket = undefined;
       activity.textContent = message.error ? 'Ошибка: ' + message.error : 'Операция завершена';
       if (socket?.readyState === WebSocket.CLOSED) scheduleReconnect();
     }
   };
+  window.onerror = (_message, _source, _line, _column, error) => journal('UI_ERROR', error?.message ?? _message);
+  window.onunhandledrejection = event => journal('UI_REJECTION', event.reason?.message ?? event.reason);
   parent.postMessage({ pluginMessage: { type: 'init' } }, '*');
 </script>
 </html>

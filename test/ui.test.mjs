@@ -40,7 +40,7 @@ test('UI relays plugin responses with null source and ignores unmatched results'
 });
 
 function automaticUI() {
-  const elements = Object.fromEntries(['status', 'activity', 'connect', 'disconnect', 'token', 'intro', 'pairing', 'file-plan', 'page-budget'].map(id => [id, { value: '' }]));
+  const elements = Object.fromEntries(['status', 'activity', 'connect', 'disconnect', 'token', 'intro', 'pairing', 'file-plan', 'page-budget', 'diagnostic-log'].map(id => [id, { value: '' }]));
   const sockets = [], timers = new Map(), commands = [];
   let nextTimer = 1;
   class WebSocket {
@@ -102,6 +102,23 @@ test('automatic reconnect waits for an interrupted command and never replays it'
   assert.equal(h.commands.length, 1);
   assert.equal(h.sockets[1].sent.length, 1);
   assert.equal(h.sockets[1].sent[0].type, 'hello');
+  h.sockets[1].receive({ type: 'ready' });
+  assert.equal(h.sockets[1].sent[1].event, 'late_result');
+  assert.equal(h.sockets[1].sent[1].id, 'edit-1');
+  assert.equal('result' in h.sockets[1].sent[1], false);
+  assert.match(h.elements['diagnostic-log'].textContent, /LATE_RESULT/);
+});
+
+test('plugin journal bounds history, redacts secrets and displays errors as text', () => {
+  const h = automaticUI();
+  for (let n = 0; n < 60; n++) {
+    h.sockets[0].receive({ type: 'command', id: 'request-' + n, command: 'get_node', args: { secret: 'PRIVATE CONTENT' } });
+    h.reply({ type: 'result', id: 'request-' + n, error: '<b>fail</b> token=' + 'a'.repeat(64) });
+  }
+  const content = h.elements['diagnostic-log'].textContent;
+  assert.equal(content.split('\n').length, 50);
+  assert.match(content, /<b>fail<\/b>/); // textContent, never interpreted as HTML
+  assert.doesNotMatch(content, /a{64}|PRIVATE CONTENT/);
 });
 
 test('UI exposes declared file plan and refreshes document metadata after authentication', () => {

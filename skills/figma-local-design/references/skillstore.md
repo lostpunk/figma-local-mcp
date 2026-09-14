@@ -29,3 +29,5 @@ Upload starts an automatic security check. A successful upload is initially `dra
 SkillStore installs the skill folder. The recipient then invokes this skill to install the bundled MCP and prepare the plugin; the Figma manifest import and plugin launch remain manual. SkillStore does not perform that Figma UI step.
 
 For command syntax and lifecycle details, use the current installed `store` skill. It is the source of truth when catalog behaviour changes.
+
+Public comments and changelogs must be self-contained: describe functionality, fixes and verification for this distribution only. Do not mention or link other distribution channels, their repositories, statuses or release numbers.

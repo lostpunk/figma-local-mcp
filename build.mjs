@@ -36,6 +36,10 @@ for (const [directory, pkg] of [...packages].sort((a, b) => a[1].name.localeComp
   for (const name of ['LICENSE', 'LICENSE.md', 'LICENSE.txt', 'LICENSE-MIT', 'license', 'license.md', 'License']) {
     try { licenseText = await readFile(resolve(directory, name), 'utf8'); break; } catch {}
   }
+  // saxes 6.0.0's npm tarball omits LICENSE; preserve the license from its tagged upstream source.
+  if (!licenseText && pkg.name === 'saxes' && pkg.version === '6.0.0') {
+    licenseText = await readFile('src/vendor-licenses/saxes-6.0.0.txt', 'utf8');
+  }
   if (!licenseText) throw new Error(`Missing bundled dependency license: ${relative(process.cwd(), directory)}`);
   notices += `\n## ${pkg.name} ${pkg.version} (${pkg.license ?? 'see license'})\n\n${licenseText.trim()}\n`;
 }

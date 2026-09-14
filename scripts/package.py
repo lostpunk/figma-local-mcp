@@ -9,7 +9,7 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 VERSION = json.loads((ROOT / 'package.json').read_text())['version']
 FILES = ['.codex-plugin/plugin.json', '.mcp.json', '.gitignore', 'package.json',
          'package-lock.json', 'build.mjs', 'tsconfig.json', 'README.md',
-         'INSTALL.md', 'CUSTOMIZE.md', 'CONTRIBUTING.md', 'codex.example.toml']
+         'INSTALL.md', 'CUSTOMIZE.md', 'CONTRIBUTING.md', 'codex.example.toml', 'LICENSE']
 DIRECTORIES = ['src', 'plugin', 'runtime', 'scripts', 'test', 'examples']
 SKILL_ROOT = ROOT / 'skills' / 'figma-local-design'
 SKILL_FILES = ['SKILL.md', 'version.json', 'agents/openai.yaml', 'package.json',

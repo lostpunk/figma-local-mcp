@@ -30,11 +30,14 @@ for (const bundled of [false, true]) test(`MCP → WebSocket → plugin: full wo
   const call = (name, args = {}) => client.callTool({ name, arguments: args });
   const data = result => JSON.parse(result.content[0].text);
   const listed = await client.listTools();
-  assert.equal(listed.tools.length, 21);
+  assert.equal(listed.tools.length, 29);
+  assert.equal(listed.tools.find(t => t.name === 'move_component').annotations.readOnlyHint, false);
   assert.equal(listed.tools.find(t => t.name === 'delete_node').annotations.destructiveHint, true);
   assert.equal((await call('get_document')).isError, true);
+  const diagnostic = data(await call('get_diagnostics', { errorsOnly: true, limit: 10 }));
+  assert.ok(diagnostic.entries.some(e => e.command === 'get_document' && e.level === 'error'));
+  assert.match(diagnostic.logFile, /events\.jsonl$/);
   const connection = data(await call('get_connection'));
-  const automaticToken = 'c'.repeat(64);
   if (bundled) {
     assert.equal(connection.pairingMode, 'automatic');
     assert.equal(connection.pairingCode, undefined);
@@ -49,7 +52,7 @@ for (const bundled of [false, true]) test(`MCP → WebSocket → plugin: full wo
   t.after(() => socket.terminate());
   await once(socket, 'open');
   const ready = once(socket, 'message');
-  socket.send(JSON.stringify({ type: 'hello', token: bundled ? automaticToken : connection.pairingCode }));
+  socket.send(JSON.stringify({ type: 'hello', token: bundled ? 'c'.repeat(64) : connection.pairingCode }));
   await ready;
   const h = pluginHarness();
   let dispatchCount = 0;
@@ -63,22 +66,28 @@ for (const bundled of [false, true]) test(`MCP → WebSocket → plugin: full wo
   const create = await call('create_node', { type: 'TEXT', props: { characters: 'Hello', fontSize: 24 } });
   assert.equal(create.isError, undefined);
   const nodeId = data(create).id;
-  const imageTarget = data(await call('create_node', { type: 'RECTANGLE', props: { width: 20, height: 20 } })).id;
+  assert.equal(data(await call('get_node', { nodeId })).characters, 'Hello');
+  assert.equal(data(await call('update_node', { nodeId, props: { characters: 'World' } })).characters, 'World');
+  assert.equal((await call('export_node', { nodeId })).content[0].type, 'image');
+  assert.equal(data(await call('export_node', { nodeId, format: 'SVG' })).svg, '<svg/>');
+  const imageTarget = data(await call('create_node', { type: 'RECTANGLE' })).id;
   const imagePath = join(tmpdir(), `figma-local-image-${process.pid}-${Date.now()}.png`);
   t.after(() => rm(imagePath, { force: true }));
   await writeFile(imagePath, Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLwvwAAAABJRU5ErkJggg==', 'base64'));
   const imported = data(await call('set_image_fill_from_path', { nodeId: imageTarget, imagePath }));
   assert.equal(imported.source.mimeType, 'image/png');
-  assert.equal(data(await call('get_node', { nodeId })).characters, 'Hello');
-  assert.equal(data(await call('update_node', { nodeId, props: { characters: 'World' } })).characters, 'World');
-  assert.equal((await call('export_node', { nodeId })).content[0].type, 'image');
-  assert.equal(data(await call('export_node', { nodeId, format: 'SVG' })).svg, '<svg/>');
   const before = dispatchCount;
   assert.equal((await call('update_node', { nodeId, props: { width: -2 } })).isError, true);
   assert.equal((await call('update_node', { nodeId, props: { arbitraryCode: 'x' } })).isError, true);
   assert.equal(dispatchCount, before, 'invalid input never reaches the plugin');
   assert.equal(data(await call('delete_node', { nodeId })).deleted.id, nodeId);
   assert.equal((await call('get_node', { nodeId })).isError, true);
+  const failedReadLog = data(await call('get_diagnostics', { errorsOnly: true, limit: 200 })).entries;
+  const failedRead = failedReadLog.findLast(e => e.command === 'get_node' && e.event === 'operation_result');
+  assert.ok(failedRead.requestId);
+  assert.equal(failedRead.code, 'PLUGIN_ERROR');
+  assert.equal(failedReadLog.filter(e => e.command === 'get_node' && e.sessionId === failedRead.sessionId).length, 1,
+    'one failed plugin call produces one error event, while pre-dispatch errors remain logged');
   const guide = data(await call('create_style_guide', { name: 'Demo' }));
   assert.equal(guide.colors.length, 10);
   const brand = guide.colors.find(t => t.name === 'brand/primary');
@@ -97,4 +106,21 @@ for (const bundled of [false, true]) test(`MCP → WebSocket → plugin: full wo
   assert.equal((await call('create_scene', { nodes: [{ ref: 'x', parentRef: 'missing', type: 'FRAME' }] })).isError, true);
   assert.equal((await call('create_style_guide', { colors: [{ name: 'x', value: '#FFFFFF' }, { name: 'x', value: '#000000' }] })).isError, true);
   assert.equal(dispatchCount, count);
+  const photo = data(await call('import_image', { dataBase64: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6tGQAAAAASUVORK5CYII=', parentId: page.id, width: 240 }));
+  assert.equal(photo.height, 120);
+  const svg = data(await call('import_svg', { svg: '<svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0L24 24"/></svg>', width: 24, parentId: page.id }));
+  assert.equal(svg.width, 24);
+  const variants = data(await call('create_component_set', { name: 'Buttons', parentId: page.id,
+    variants: ['Default', 'Hover'].map(State => ({ componentId: scene.nodes[0].id, properties: { State } })) }));
+  const variantInstance = data(await call('create_instance', { componentId: variants.variants[0].id, parentId: page.id }));
+  assert.equal(data(await call('set_instance_properties', { nodeId: variantInstance.id, properties: { State: 'Hover' } })).componentProperties.State.value, 'Hover');
+  assert.equal((await call('set_prototype_link', { nodeId: variants.variants[0].id, destinationId: variants.variants[1].id, action: 'CHANGE_TO' })).isError, undefined);
+  const screen = data(await call('create_node', { type: 'FRAME', parentId: page.id }));
+  assert.equal(data(await call('set_prototype_start', { frameId: screen.id, name: 'Main' })).flowStartingPoints.length, 1);
+  const dispatched = dispatchCount;
+  assert.equal((await call('import_svg', { svg: '<svg><script/></svg>' })).isError, true);
+  assert.equal((await call('create_component_set', { name: 'Duplicate', variants: [
+    { componentId: scene.nodes[0].id, properties: { State: 'A' } }, { componentId: scene.nodes[0].id, properties: { State: 'A' } },
+  ] })).isError, true);
+  assert.equal(dispatchCount, dispatched, 'invalid assets and variant definitions never reach Figma');
 });

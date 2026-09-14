@@ -1,9 +1,11 @@
 {
   "name": "figma-local-mcp",
-  "version": "0.6.4",
+  "version": "0.7.4",
   "private": true,
   "type": "module",
-  "engines": { "node": ">=22" },
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "build": "tsc --noEmit && node build.mjs",
     "start": "node src/server.mjs",
@@ -15,7 +17,8 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
     "ws": "^8.18.0",
-    "zod": "^3.24.0"
+    "zod": "^3.24.0",
+    "saxes": "6.0.0"
   },
   "devDependencies": {
     "@figma/plugin-typings": "^1.0.0",
