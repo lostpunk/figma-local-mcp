@@ -4,6 +4,7 @@ import { mkdtemp, mkdir, readFile, writeFile, symlink, rm, realpath, rename } fr
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { readAssetAccess, readAllowedAsset, updateAssetAccess } from '../src/asset-access.mjs';
 
 async function fixture(t) {
@@ -59,7 +60,7 @@ test('bounded reads reject oversized files, directories and special files withou
 test('asset access CLI works from another directory and revokes deleted directories', async t => {
   const { root, assets } = await fixture(t);
   const cli = new URL('../scripts/asset-access.mjs', import.meta.url);
-  const run = (...args) => spawnSync(process.execPath, [cli.pathname, '--package-root', root, ...args], { cwd: tmpdir(), encoding: 'utf8' });
+  const run = (...args) => spawnSync(process.execPath, [fileURLToPath(cli), '--package-root', root, ...args], { cwd: tmpdir(), encoding: 'utf8' });
   const add = run('--allow', assets);
   assert.equal(add.status, 0, add.stderr);
   assert.deepEqual(JSON.parse(add.stdout).allowedRoots, [assets]);

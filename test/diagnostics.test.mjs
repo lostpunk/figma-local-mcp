@@ -20,7 +20,8 @@ test('diagnostics retain actionable metadata, redact credentials and never seria
   const [event] = log.read().entries;
   assert.equal(event.command, 'create_scene'); assert.equal(event.durationMs, 30001);
   assert.equal(event.requestId, 'request-1'); assert.equal(event.code, 'TIMEOUT');
-  assert.equal((await stat(join(directory, 'events.jsonl'))).mode & 0o777, 0o600);
+  // Windows access is governed by ACLs, not POSIX permission bits.
+  if (process.platform !== 'win32') assert.equal((await stat(join(directory, 'events.jsonl'))).mode & 0o777, 0o600);
   assert.doesNotThrow(() => log.record('info', 'plugin_connected', { pluginVersion: { toString: null } }));
 });
 test('diagnostics rotate to a bounded set and remain readable across restarts', async t => {
