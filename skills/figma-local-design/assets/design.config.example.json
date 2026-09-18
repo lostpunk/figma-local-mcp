@@ -1,12 +1,59 @@
 {
+  "schemaVersion": 1,
   "profile": "shadcn-ui",
-  "library": { "name": "shadcn/ui", "mode": "reference", "docs": "https://ui.shadcn.com/docs", "components": {} },
-  "foundation": { "name": "Product", "theme": "light", "fontFamily": "Inter", "spacing": [4, 8, 12, 16, 24, 32, 48, 64] },
-  "viewports": { "desktop": 1440, "mobile": 390 },
+  "library": {
+    "name": "shadcn/ui",
+    "mode": "reference",
+    "docs": "https://ui.shadcn.com/docs",
+    "components": {}
+  },
+  "foundation": {
+    "name": "Product",
+    "theme": "light",
+    "fontFamily": "Inter",
+    "spacing": [
+      4,
+      8,
+      12,
+      16,
+      24,
+      32,
+      48,
+      64
+    ]
+  },
+  "viewports": {
+    "desktop": 1440,
+    "mobile": 390
+  },
   "rulesFiles": [],
   "rules": [
     "Для новых экранов использовать семантические цвета и текстовые стили.",
     "Повторяющиеся элементы оформлять компонентами и использовать экземпляры.",
     "Проверять длинный текст, подписи полей и состояния ошибок текущего сценария."
-  ]
+  ],
+  "grid": {
+    "columns": 12,
+    "gutter": 24,
+    "margin": 64
+  },
+  "naming": {
+    "frames": "{number} — {screen} / {viewport}",
+    "components": "{category}/{name}",
+    "layers": "{role}"
+  },
+  "componentStates": {
+    "Button": [
+      "default",
+      "hover",
+      "focus",
+      "disabled"
+    ],
+    "Input": [
+      "default",
+      "focus",
+      "error",
+      "disabled"
+    ]
+  }
 }

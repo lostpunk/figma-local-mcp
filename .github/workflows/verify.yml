@@ -9,9 +9,16 @@ permissions:
 
 jobs:
   verify:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -33,5 +40,29 @@ jobs:
           PYERROR
             exit 1
           fi
-      - run: npm test
-      - run: npm run pack:skillstore
+      - name: Build, test and verify release
+        shell: bash
+        run: |
+          set -o pipefail
+          npm run release 2>&1 | tee "$RUNNER_TEMP/release.log"
+      - name: Report verification failures
+        if: failure()
+        shell: python
+        run: |
+          import os, pathlib
+          log = pathlib.Path(os.environ['RUNNER_TEMP'], 'release.log')
+          if log.exists():
+              lines = log.read_text(encoding='utf-8', errors='replace').splitlines()
+              failures = [i for i, line in enumerate(lines) if line.startswith(('not ok ', '✖'))]
+              for i in failures or [max(0, len(lines) - 50)]:
+                  message = '\n'.join(lines[i:i+60])
+                  message = message.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
+                  print('::error title=Release verification failed::' + message)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.os }}
+          path: |
+            dist/*.zip
+            dist/*.sha256
+            dist/release-*.json
+            artifacts/validation-*.json

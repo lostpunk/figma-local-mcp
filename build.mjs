@@ -6,9 +6,11 @@ import { readInstallationToken } from './src/pairing.mjs';
 import { prepareLocalPlugin } from './scripts/local-plugin.mjs';
 import { packageSkill } from './scripts/package-skill.mjs';
 process.chdir(dirname(fileURLToPath(import.meta.url)));
+const { version } = JSON.parse(await readFile('package.json', 'utf8'));
 await build({
   entryPoints: ['plugin/code.ts'], bundle: true, outfile: 'plugin/code.js',
   target: 'es2017', format: 'iife', legalComments: 'none',
+  define: { __PACKAGE_VERSION__: JSON.stringify(version) },
 });
 await mkdir('runtime', { recursive: true });
 const result = await build({
@@ -44,5 +46,15 @@ for (const [directory, pkg] of [...packages].sort((a, b) => a[1].name.localeComp
   notices += `\n## ${pkg.name} ${pkg.version} (${pkg.license ?? 'see license'})\n\n${licenseText.trim()}\n`;
 }
 await writeFile('runtime/THIRD_PARTY_NOTICES.md', notices);
+await build({
+  entryPoints: ['src/project-rules-cli.mjs'], bundle: true,
+  outfile: 'skills/figma-local-design/scripts/project-rules.mjs',
+  platform: 'node', target: 'node22', format: 'esm', legalComments: 'eof',
+});
+await build({
+  entryPoints: ['src/onboarding.mjs'], bundle: true,
+  outfile: 'skills/figma-local-design/scripts/onboarding.mjs',
+  platform: 'node', target: 'node22', format: 'esm', legalComments: 'eof',
+});
 if (await readInstallationToken(process.cwd())) await prepareLocalPlugin(process.cwd());
 await packageSkill(process.cwd());

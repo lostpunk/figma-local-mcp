@@ -40,7 +40,7 @@ test('UI relays plugin responses with null source and ignores unmatched results'
 });
 
 function automaticUI() {
-  const elements = Object.fromEntries(['status', 'activity', 'connect', 'disconnect', 'token', 'intro', 'pairing', 'file-plan', 'page-budget', 'diagnostic-log'].map(id => [id, { value: '' }]));
+  const elements = Object.fromEntries(['status', 'activity', 'connect', 'disconnect', 'token', 'intro', 'pairing', 'file-plan', 'page-budget', 'diagnostic-log', 'versions', 'recovery', 'copy-report', 'support-report', 'copy-status'].map(id => [id, { value: '', focus() {}, select() {} }]));
   const sockets = [], timers = new Map(), commands = [];
   let nextTimer = 1;
   class WebSocket {
@@ -135,4 +135,28 @@ test('UI exposes declared file plan and refreshes document metadata after authen
   assert.equal(h.sockets[0].sent.at(-1).type, 'document');
   h.sockets[0].receive(null);
   assert.equal(h.sockets[0].readyState, 3);
+});
+
+test('support report excludes content, keys and raw error text with clipboard fallback', async () => {
+  const h = automaticUI();
+  h.reply({ type: 'document', document: { name: 'SECRET FILE', pluginVersion: '0.7.5' } });
+  h.sockets[0].receive({ type: 'ready', serverVersion: '0.7.5' });
+  h.sockets[0].receive({ type: 'command', id: 'secret-node-id', command: 'create_node', args: { name: 'SECRET CONTENT' } });
+  h.reply({ type: 'result', id: 'secret-node-id', error: 'SECRET CONTENT token=abcd /Users/private/file' });
+  await h.elements['copy-report'].onclick();
+  const report = h.elements['support-report'].value;
+  assert.equal(h.elements['support-report'].hidden, false);
+  assert.equal(JSON.parse(report).lastErrorCode, 'PLUGIN_ERROR');
+  assert.doesNotMatch(report, /SECRET|abcd|secret-node-id|Users|b{64}/);
+});
+test('reconnect returns the finished result without re-executing the edit', () => {
+  const h = automaticUI();
+  h.sockets[0].receive({ type: 'command', id: 'edit-1', command: 'create_node', args: {} });
+  h.sockets[0].receive({ type: 'command', id: 'edit-1', command: 'create_node', args: {} });
+  assert.equal(h.commands.length, 1);
+  h.sockets[0].close(1006);
+  h.reply({ type: 'result', id: 'edit-1', result: { id: '2:1' } });
+  h.tick(); h.sockets[1].receive({ type: 'ready' });
+  const result = h.sockets[1].sent.find(m => m.type === 'recovered_result');
+  assert.equal(result.result.id, '2:1'); assert.equal(h.commands.length, 1);
 });

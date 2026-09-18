@@ -1,11 +1,13 @@
 import { createPageChecked, getCapabilities } from './capabilities';
+import { variableResolver } from './variables';
+import { syncGuide } from './sync-guide';
 type Args = Record<string, any>;
 type Helpers = {
   getNode(id: string): Promise<BaseNode>;
   applyProps(node: SceneNode, props: Args): Promise<void>;
   createNode(args: Args): Promise<SceneNode>;
 };
-export const designCommands = new Set(['create_style_guide', 'get_design_system', 'create_page', 'create_scene', 'create_instance', 'set_variable']);
+export const designCommands = new Set(['create_style_guide', 'sync_style_guide', 'get_design_system', 'create_page', 'create_scene', 'create_instance', 'set_variable']);
 const rgb = (hex: string): RGB => ({ r: parseInt(hex.slice(1, 3), 16) / 255,
   g: parseInt(hex.slice(3, 5), 16) / 255, b: parseInt(hex.slice(5, 7), 16) / 255 });
 
@@ -144,6 +146,7 @@ async function createGuide(args: Args, helpers: Helpers) {
 export async function executeDesignCommand(command: string, args: Args, helpers: Helpers): Promise<any> {
   switch (command) {
     case 'create_style_guide': return createGuide(args, helpers);
+    case 'sync_style_guide': return syncGuide(args);
     case 'get_design_system': {
       const collections = await figma.variables.getLocalVariableCollectionsAsync();
       const selected = collections.filter(c => c.name.startsWith(args.prefix));
@@ -223,9 +226,9 @@ export async function executeDesignCommand(command: string, args: Args, helpers:
       } catch (error) { instance.remove(); throw error; }
     }
     case 'set_variable': {
-      const variable = await figma.variables.getVariableByIdAsync(args.variableId);
+      const variable = await variableResolver()(args.variableId, true);
       if (!variable || variable.remote) throw new Error('Local variable not found');
-      const collection = await figma.variables.getVariableCollectionByIdAsync(variable.variableCollectionId);
+      const collection = (await figma.variables.getLocalVariableCollectionsAsync()).find(c => c.id === variable.variableCollectionId);
       if (!collection) throw new Error('Variable collection not found');
       const modeId = args.modeId ?? collection.defaultModeId;
       if (!collection.modes.some(m => m.modeId === modeId)) throw new Error('Mode does not belong to this collection');

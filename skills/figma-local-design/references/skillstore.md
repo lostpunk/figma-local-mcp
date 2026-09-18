@@ -31,3 +31,7 @@ SkillStore installs the skill folder. The recipient then invokes this skill to i
 For command syntax and lifecycle details, use the current installed `store` skill. It is the source of truth when catalog behaviour changes.
 
 Public comments and changelogs must be self-contained: describe functionality, fixes and verification for this distribution only. Do not mention or link other distribution channels, their repositories, statuses or release numbers.
+
+## Shared package content
+
+Run `npm run pack:skillstore` to prepare the upload directory. The builder uses the shared skill sources, including its design profile, welcome and release metadata. No private overlay or channel-specific design rules are required. Only the existing compatibility normalization of generated dependency/schema URLs and notices differs; source instructions, settings and behavior remain shared. Do not edit files under dist; change the canonical skill and rebuild.

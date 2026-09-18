@@ -7,7 +7,7 @@ import { basename, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const source = fileURLToPath(new URL('../', import.meta.url));
-const ignoredDirectories = new Set(['.git', 'dist', 'generated', 'node_modules']);
+const ignoredDirectories = new Set(['.git', 'dist', 'generated', 'node_modules', 'artifacts', 'backups', 'private-distributions']);
 
 test('portable archives exclude local SkillStore metadata', async t => {
   const directory = await mkdtemp(join(tmpdir(), 'figma-package-'));
@@ -29,6 +29,26 @@ test('portable archives exclude local SkillStore metadata', async t => {
   assert.ok(entries.includes('figma-local-mcp/skills/figma-local-design/scripts/setup.mjs'));
   assert.ok(!entries.some(entry => entry.endsWith('/runtime-payload.json.gz') || entry.endsWith('/runtime-release.json')));
   assert.ok(!entries.some(entry => entry.endsWith('/.skillstore-meta.json') || entry.endsWith('/installation.json')));
+  assert.ok(entries.includes('figma-local-mcp/skills/figma-local-design/assets/distribution.json'));
+  assert.ok(entries.includes('figma-local-mcp/skills/figma-local-design/references/gravity-ui.md'));
+  const first = await readFile(archive);
+  const repeat = spawnSync('python3', [join(root, 'scripts/package.py')], { cwd: root, encoding: 'utf8' });
+  assert.equal(repeat.status, 0, repeat.stderr);
+  assert.deepEqual(await readFile(archive), first, 'identical inputs must produce identical archive bytes');
+  await writeFile(archive, Buffer.concat([first, Buffer.from('tampered')]));
+  const corrupted = spawnSync('python3', [join(root, 'scripts/package.py'), '--verify'], { cwd: root, encoding: 'utf8' });
+  assert.notEqual(corrupted.status, 0);
+  assert.match(corrupted.stderr, /checksum mismatch/);
+  await writeFile(archive, first);
+  await writeFile(join(root, 'plugin/ui.html'), "const installationToken = '" + 'b'.repeat(64) + "';");
+  const secret = spawnSync('python3', [join(root, 'scripts/package.py')], { cwd: root, encoding: 'utf8' });
+  assert.notEqual(secret.status, 0);
+  assert.match(secret.stderr, /pairing secret/);
+  await cp(join(source, 'plugin/ui.html'), join(root, 'plugin/ui.html'));
+  await writeFile(join(root, 'skills/figma-local-design/references/distribution-profile.md'), 'Retired private profile');
+  const contaminated = spawnSync('python3', [join(root, 'scripts/package.py')], { cwd: root, encoding: 'utf8' });
+  assert.notEqual(contaminated.status, 0);
+  assert.match(contaminated.stderr, /Forbidden/);
 });
 
 test('SkillStore package removes deep external references from generated files only', async t => {

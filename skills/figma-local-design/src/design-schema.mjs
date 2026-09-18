@@ -32,6 +32,19 @@ export const guideSchema = {
     .refine(unique, 'Radius names must be unique').default([0, 4, 8, 12, 16, 24].map(value => ({ name: String(value), value }))),
 };
 
+// A patch has no creation defaults: omitted groups must remain untouched.
+export const syncGuideSchema = {
+  collectionId: z.string().min(1).max(200),
+  dryRun: z.boolean().default(true),
+  colors: guideSchema.colors.removeDefault().optional(),
+  typography: z.array(z.object({ name, fontFamily: name, fontStyle: name,
+    fontSize: z.number().finite().positive().max(120),
+    lineHeight: z.number().finite().positive().max(240).optional(),
+  }).strict()).min(1).max(20).refine(unique, 'Typography names must be unique').optional(),
+  spacing: guideSchema.spacing.removeDefault().optional(),
+  radii: guideSchema.radii.removeDefault().optional(),
+};
+
 export function sceneSchema(props) {
   return z.array(z.object({
     ref: name, parentRef: name.optional(),

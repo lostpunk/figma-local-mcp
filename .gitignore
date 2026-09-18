@@ -12,4 +12,5 @@ skills/**/installation.json
 
 artifacts/
 backups/
+private-distributions/
 .figma-design.json

@@ -50,6 +50,18 @@ test('all fonts are loaded before modifying mixed text', async () => {
   assert.equal(node.characters, 'new');
 });
 
+test('font loading failure reports no mutation and does not add an undo boundary', async () => {
+  const h = pluginHarness();
+  const node = h.node('TEXT', 'Original', h.page);
+  node.characters = 'Keep';
+  h.figma.loadFontAsync = async () => { throw new Error('Font unavailable'); };
+  const response = await h.call('update_node', { nodeId: node.id, props: { name: 'After', characters: 'Changed' } });
+  assert.match(response.error, /Font unavailable.*No properties changed/);
+  assert.equal(node.name, 'Original');
+  assert.equal(node.characters, 'Keep');
+  assert.equal(h.undoCount, 0);
+});
+
 test('search pagination includes nested text without duplicate matches', async () => {
   const h = pluginHarness();
   const frame = h.node('FRAME', 'Main', h.page);
@@ -136,4 +148,15 @@ test('layer order is explicit and reparenting can insert a background at the bac
   const reordered = await h.call('reorder_nodes', { parentId: screen.id, nodeIds: [overlay.id], index: 0 });
   assert.equal(reordered.error, undefined);
   assert.deepEqual(screen.children.map(node => node.name), ['Overlay', 'Background', 'Content']);
+});
+
+test('simple shape update restores previous values if a setter fails after an edit', async () => {
+  const h = pluginHarness();
+  const node = h.node('RECTANGLE', 'Original', h.page);
+  const oldWidth = node.width;
+  const resize = node.resize.bind(node); let attempts = 0;
+  node.resize = (w, h) => { if (++attempts === 1) throw new Error('Resize rejected'); resize(w, h); };
+  const result = await h.call('update_node', { nodeId: node.id, props: { name: 'Changed', width: 300 } });
+  assert.match(result.error, /Original shape properties restored/);
+  assert.equal(node.name, 'Original'); assert.equal(node.width, oldWidth);
 });

@@ -1,7 +1,7 @@
 import { cp, lstat, mkdir, readdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 
-const runtimeEntries = ['package.json', 'runtime', 'plugin', 'src', 'scripts/setup.mjs', 'scripts/local-plugin.mjs'];
+const runtimeEntries = ['package.json', 'runtime', 'plugin', 'src', 'scripts/setup.mjs', 'scripts/local-plugin.mjs', 'scripts/asset-access.mjs'];
 
 async function assertNoSymlinks(path) {
   const metadata = await lstat(path);

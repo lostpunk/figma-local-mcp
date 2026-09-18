@@ -22,6 +22,8 @@
 <button id="connect">Подключить</button>
 <button id="disconnect" hidden>Отключить</button>
 <div id="status" role="status">Ожидание подключения</div>
+<p id="versions"></p>
+<p id="recovery" role="status"></p>
 <p id="activity">Держите это окно открытым во время работы.</p>
 <label for="file-plan">Тариф команды этого файла</label>
 <select id="file-plan">
@@ -36,6 +38,9 @@
 <details><summary>Журнал событий и ошибок</summary>
 <p>Последние 50 событий этого запуска. Постоянные логи: get_diagnostics в MCP.</p>
 <pre id="diagnostic-log" aria-label="Журнал диагностики"></pre>
+<button id="copy-report">Скопировать отчёт</button>
+<textarea id="support-report" hidden readonly aria-label="Отчёт для поддержки" style="width:100%;height:150px"></textarea>
+<p id="copy-status" role="status"></p>
 </details>
 <script>
   const installationToken = '';
@@ -47,6 +52,14 @@
   const pageBudget = document.getElementById('page-budget');
   const diagnosticLog = document.getElementById('diagnostic-log');
   const history = [];
+  const supportEvents = [];
+  const recoveredResults = [];
+  let recoveredBytes = 0;
+  let serverVersion;
+  let lastErrorCode;
+  const pluginSessionId = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36) + '-' + Math.random().toString(36).slice(2);
+  const versions = document.getElementById('versions');
+  const recovery = document.getElementById('recovery');
   const lateResults = [];
   function safeLogText(value) {
     if (value != null && !['string', 'number', 'boolean'].includes(typeof value)) return '[unsupported metadata]';
@@ -58,6 +71,8 @@
       .replace(/[\x00-\x1f\x7f]/g, ' ').slice(0, 1000);
   }
   function journal(event, detail = '') {
+    supportEvents.push({ time: new Date().toISOString(), event: /^[A-Z_]+$/.test(event) ? event : 'UNKNOWN' });
+    if (supportEvents.length > 50) supportEvents.shift();
     history.push(new Date().toISOString() + ' ' + event + ' ' + safeLogText(detail));
     if (history.length > 50) history.shift();
     if (diagnosticLog) diagnosticLog.textContent = history.join('\n');
@@ -73,6 +88,41 @@
   let retryDelay = 1000;
   let stopped = false;
   let authenticatedSocket;
+  function showVersions() {
+    if (versions) versions.textContent = 'Плагин: ' + (documentInfo?.pluginVersion ?? 'неизвестно') + '; MCP: ' + (serverVersion ?? 'не подключён');
+    if (recovery && serverVersion && documentInfo?.pluginVersion !== serverVersion) recovery.textContent = 'Версии отличаются. Обновите MCP и плагин из одного пакета и перезапустите их.';
+  }
+  function supportReport() {
+    // Deliberately excludes document names, IDs, text, paths, keys and free-form errors.
+    return JSON.stringify({ format: 'figma-local-support-v1', versions: {
+      plugin: /^\d+\.\d+\.\d+$/.test(documentInfo?.pluginVersion ?? '') ? documentInfo.pluginVersion : null,
+      server: /^\d+\.\d+\.\d+$/.test(serverVersion ?? '') ? serverVersion : null },
+      connected: socket === authenticatedSocket && socket?.readyState === WebSocket.OPEN,
+      operation: activeRequest ? 'running' : 'idle', elapsedMs: activeRequest ? Date.now() - activeStartedAt : null,
+      lastErrorCode: lastErrorCode ?? null, events: supportEvents }, null, 2);
+  }
+  const copyReport = document.getElementById('copy-report');
+  if (copyReport) copyReport.onclick = async () => {
+    const report = supportReport();
+    const field = document.getElementById('support-report');
+    const feedback = document.getElementById('copy-status');
+    field.value = report;
+    try {
+      if (!navigator.clipboard?.writeText) throw new Error('Clipboard unavailable');
+      await navigator.clipboard.writeText(report);
+      feedback.textContent = 'Отчёт скопирован. Данные макета и ключ подключения исключены.';
+    } catch {
+      field.hidden = false; field.focus(); field.select();
+      feedback.textContent = 'Выделен готовый отчёт. Нажмите ⌘C или Ctrl+C.';
+    }
+  };
+  if (typeof setInterval === 'function') setInterval(() => {
+    if (activeRequest) {
+      const seconds = Math.floor((Date.now() - activeStartedAt) / 1000);
+      activity.textContent = 'Выполняется: ' + activeCommand + ' · ' + seconds + ' с';
+      if (seconds >= 120 && recovery) recovery.textContent = 'Операция ещё выполняется. Не повторяйте её; оставьте плагин открытым и проверьте get_operation.';
+    }
+  }, 1000);
   if (installationToken) {
     document.getElementById('pairing').hidden = true;
     document.getElementById('intro').textContent = 'Автоматическое подключение к MCP на этом компьютере.';
@@ -94,7 +144,7 @@
     status.textContent = 'Подключение…';
     connect.disabled = true;
     disconnect.hidden = false;
-    current.onopen = () => current.send(JSON.stringify({ type: 'hello', token, document: documentInfo }));
+    current.onopen = () => current.send(JSON.stringify({ type: 'hello', token, pluginSessionId, document: documentInfo }));
     current.onmessage = event => {
       if (socket !== current) return;
       let message;
@@ -102,19 +152,28 @@
       if (!message || typeof message !== 'object') { current.close(); return; }
       if (message.type === 'ready') {
         authenticatedSocket = current;
+        serverVersion = message.serverVersion;
+        if (recovery) recovery.textContent = '';
+        showVersions();
         retryDelay = 1000;
         status.textContent = 'Подключено. MCP может читать и редактировать этот файл.';
         disconnect.hidden = false;
         document.getElementById('token').value = '';
         journal('CONNECTED');
         while (lateResults.length) current.send(JSON.stringify(lateResults.shift()));
+        for (const result of recoveredResults) current.send(JSON.stringify({ ...result, type: 'recovered_result' }));
+      } else if (message.type === 'result_ack') {
+        const index = recoveredResults.findIndex(result => result.id === message.id);
+        if (index >= 0) recoveredBytes -= JSON.stringify(recoveredResults.splice(index, 1)[0]).length * 2;
       } else if (message.type === 'command') {
+        if (activeRequest === message.id) return;
         if (activeRequest) {
           current.send(JSON.stringify({ type: 'result', id: message.id, error: 'Plugin busy' })); return;
         }
         activeRequest = message.id;
         activeCommand = message.command;
         activeStartedAt = Date.now();
+        if (recovery) recovery.textContent = '';
         journal('START', activeCommand + ' id=' + activeRequest);
         filePlan.disabled = true;
         responseSocket = current;
@@ -128,14 +187,17 @@
       status.textContent = 'Отключено' + (event.reason ? ': ' + event.reason : '. Вызовите get_connection и подключитесь снова.');
       connect.disabled = false;
       disconnect.hidden = true;
-      if (event.code === 1008) stopped = true;
+      if (event.code === 1008) {
+        stopped = true; lastErrorCode = 'CONNECTION_REJECTED';
+        if (recovery) recovery.textContent = 'Подключение отклонено. Закройте вторую копию плагина; если не помогло, обновите локальную установку и запустите Auto снова.';
+      }
       if (installationToken && !stopped) {
         status.textContent = activeRequest ? 'Связь потеряна. Ожидаем завершения операции; повторно она не отправляется.' : 'Ожидаем локальный MCP. Подключение восстановится автоматически.';
         disconnect.hidden = false;
         scheduleReconnect();
       }
     };
-    current.onerror = () => { if (socket === current) { status.textContent = 'Нет соединения с локальным MCP на порту 3055'; journal('SOCKET_ERROR'); } };
+    current.onerror = () => { if (socket === current) { status.textContent = 'Нет соединения с локальным MCP на порту 3055'; journal('SOCKET_ERROR'); lastErrorCode = 'SOCKET_ERROR'; } };
   }
   connect.onclick = () => { stopped = false; connectToBridge(); };
   disconnect.onclick = () => {
@@ -188,6 +250,7 @@
     }
     if (message.type === 'document') {
       documentInfo = message.document;
+      showVersions();
       const capability = documentInfo?.capabilities;
       if (capability) {
         filePlan.value = capability.plan;
@@ -203,6 +266,13 @@
       const durationMs = Date.now() - activeStartedAt;
       const delivered = responseSocket?.readyState === WebSocket.OPEN;
       journal(delivered ? (message.error ? 'ERROR' : 'DONE') : 'LATE_RESULT', activeCommand + ' id=' + activeRequest + ' ms=' + durationMs + (message.error ? ' ' + safeLogText(message.error) : ' completed'));
+      if (/^[0-9a-f-]{36}:\d+$/.test(message.id) || !delivered) {
+        const bytes = JSON.stringify(message).length * 2;
+        if (bytes <= 16 * 1024 * 1024) {
+          while (recoveredResults.length && (recoveredResults.length >= 32 || recoveredBytes + bytes > 16 * 1024 * 1024)) recoveredBytes -= JSON.stringify(recoveredResults.shift()).length * 2;
+          recoveredResults.push(message); recoveredBytes += bytes;
+        }
+      }
       if (!delivered) {
         lateResults.push({ type: 'diagnostic', event: 'late_result', id: activeRequest,
           command: activeCommand, durationMs, failed: typeof message.error === 'string', error: message.error ? safeLogText(message.error) : undefined });
@@ -213,6 +283,8 @@
       activeCommand = undefined;
       filePlan.disabled = false;
       responseSocket = undefined;
+      lastErrorCode = message.error ? 'PLUGIN_ERROR' : undefined;
+      if (message.error && recovery) recovery.textContent = 'Проверьте затронутые слои и get_operation. Не повторяйте создание автоматически; при частичном изменении используйте Undo в Figma.';
       activity.textContent = message.error ? 'Ошибка: ' + message.error : 'Операция завершена';
       if (socket?.readyState === WebSocket.CLOSED) scheduleReconnect();
     }

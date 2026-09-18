@@ -47,7 +47,7 @@ export function pluginHarness() {
           else delete this.boundVariables[field];
         },
         visible: true, locked: false, opacity: 1, fills: [], strokes: [], strokeWeight: 1,
-        reactions: [],
+        reactions: [], effects: [],
         async setReactionsAsync(reactions) { this.reactions = reactions; },
         absoluteBoundingBox: { x: 0, y: 0, width: 100, height: 100 },
         resize(width, height) { this.width = width; this.height = height; },
@@ -55,6 +55,10 @@ export function pluginHarness() {
           this.lastExport = settings;
           return settings.format === 'SVG_STRING' ? '<svg/>' : new Uint8Array([137, 80, 78, 71]);
         },
+      });
+      Object.defineProperty(result, 'relativeTransform', {
+        get() { return this._relativeTransform ?? [[1, 0, this.x], [0, 1, this.y]]; },
+        set(value) { this._relativeTransform = value; },
       });
       if (type !== 'ELLIPSE') Object.assign(result, { cornerRadius: 0,
         topLeftRadius: 0, topRightRadius: 0, bottomLeftRadius: 0, bottomRightRadius: 0 });
@@ -189,6 +193,11 @@ export function pluginHarness() {
     figma, __html__: '', console,
   });
   return { figma, page, root, node, nodes, fonts, variables, styles, collections, get undoCount() { return undoCount; },
+    async getDocument() {
+      messages.length = 0;
+      await figma.ui.onmessage({ type: 'init' });
+      return JSON.parse(JSON.stringify(messages.find(message => message.type === 'document').document));
+    },
     async call(command, args = {}) {
       messages.length = 0;
       await figma.ui.onmessage({ type: 'command', id: 'test', command, args });

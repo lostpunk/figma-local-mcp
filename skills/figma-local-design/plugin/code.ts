@@ -1,6 +1,11 @@
+// Replaced by build.mjs using the release version in package.json.
+declare const __PACKAGE_VERSION__: string;
+
 import { designCommands, executeDesignCommand } from './design-system';
 import { getCapabilities, setDeclaredPlan } from './capabilities';
 import { extendedCommands, executeExtended } from './extended';
+import { variableResolver } from './variables';
+import { auditDesign } from './audit';
 type Args = Record<string, any>;
 type Json = Record<string, any>;
 const properties = [
@@ -112,8 +117,9 @@ async function createFigmaImage(base64: string, mimeType?: string): Promise<{ im
   try { return { image: figma.createImage(figma.base64Decode(png)), normalized: true }; }
   catch (error) { throw new Error(`Figma could not create the normalized image: ${error instanceof Error ? error.message : String(error)}`); }
 }
-async function applyProps(node: SceneNode, props: Args) {
+async function applyProps(node: SceneNode, props: Args, beforeMutation: () => void = () => {}) {
   const target = node as any;
+  const resolveVariable = variableResolver();
   const special = ['textStyleId', 'fillVariableId', 'strokeVariableId', 'variableBindings'];
   let textStyle: TextStyle | undefined;
   if (props.textStyleId) {
@@ -126,16 +132,19 @@ async function applyProps(node: SceneNode, props: Args) {
   const bindings: { field: string; variable: Variable | null }[] = [];
   for (const [field, variableId] of Object.entries(props.variableBindings ?? {})) {
     if (!(field in node)) throw new Error(`Variable binding ${field} is not supported on ${node.type}`);
-    const variable = variableId === null ? null : await figma.variables.getVariableByIdAsync(variableId as string);
+    const variable = variableId === null ? null : await resolveVariable(variableId as string);
     if (variableId !== null && (!variable || variable.resolvedType !== 'FLOAT')) throw new Error(`FLOAT variable not found for ${field}`);
     bindings.push({ field, variable });
   }
   const paints: Record<string, Paint[]> = {};
+  if (props.fill !== undefined) paint(props.fill);
+  if (props.stroke !== undefined) paint(props.stroke);
+  if ((props.width !== undefined || props.height !== undefined) && !('resize' in node)) throw new Error(`Resize is not supported on ${node.type}`);
   for (const [key, field, raw] of [['fillVariableId', 'fills', 'fill'], ['strokeVariableId', 'strokes', 'stroke']]) {
     if (!props[key]) continue;
     if (!(field in node)) throw new Error(`${field} is not supported on ${node.type}`);
     if (props[raw] !== undefined) throw new Error(`Use ${key} or ${raw} in one call`);
-    const variable = await figma.variables.getVariableByIdAsync(props[key]);
+    const variable = await resolveVariable(props[key]);
     if (!variable || variable.resolvedType !== 'COLOR') throw new Error(`COLOR variable not found: ${props[key]}`);
     paints[field] = [figma.variables.setBoundVariableForPaint({ type: 'SOLID', color: { r: 0, g: 0, b: 0 } }, 'color', variable)];
   }
@@ -155,6 +164,7 @@ async function applyProps(node: SceneNode, props: Args) {
     const unique = new Map(fonts.map(font => [JSON.stringify(font), font]));
     for (const font of unique.values()) await figma.loadFontAsync(font);
   }
+  beforeMutation();
   if (textStyle && node.type === 'TEXT') await node.setTextStyleIdAsync(textStyle.id);
   if (props.fontName) target.fontName = props.fontName;
   if (props.layoutMode !== undefined) target.layoutMode = props.layoutMode;
@@ -197,6 +207,7 @@ async function execute(command: string, args: Args): Promise<any> {
   if (designCommands.has(command)) return executeDesignCommand(command, args, { getNode, applyProps, createNode });
   const budget = { left: args.maxNodes ?? 200 };
   switch (command) {
+    case 'audit_design': return auditDesign(await getNode(args.nodeId), args);
     case 'get_document':
       return { name: figma.root.name, currentPageId: figma.currentPage.id,
         pages: figma.root.children.map(p => ({ id: p.id, name: p.name })), capabilities: getCapabilities() };
@@ -244,8 +255,25 @@ async function execute(command: string, args: Args): Promise<any> {
     }
     case 'update_node': {
       const node = requireScene(await getNode(args.nodeId));
-      try { await applyProps(node, args.props); }
+      const target = node as any;
+      const rollbackFields = ['name', 'x', 'y', 'width', 'height', 'rotation', 'opacity', 'visible', 'locked', 'fill', 'stroke', 'strokeWeight', 'cornerRadius'];
+      const canRestore = ['RECTANGLE', 'ELLIPSE'].includes(node.type) && Object.keys(args.props).every(k => rollbackFields.includes(k)) &&
+        !Object.keys(target.boundVariables ?? {}).length && !target.fillStyleId && !target.strokeStyleId &&
+        !((node.parent as any)?.layoutMode && (node.parent as any).layoutMode !== 'NONE');
+      const snapshot = canRestore ? { name: node.name, x: node.x, y: node.y, width: node.width, height: node.height,
+        rotation: target.rotation, opacity: target.opacity, visible: node.visible, locked: node.locked,
+        fills: target.fills, strokes: target.strokes, strokeWeight: target.strokeWeight, cornerRadius: target.cornerRadius } : null;
+      let mutationStarted = false;
+      try { await applyProps(node, args.props, () => { mutationStarted = true; }); }
       catch (error) {
+        if (!mutationStarted) throw new Error(`${error instanceof Error ? error.message : String(error)}. No properties changed.`);
+        if (snapshot) {
+          try {
+            target.resize(snapshot.width, snapshot.height);
+            for (const [key, value] of Object.entries(snapshot)) if (!['width', 'height'].includes(key) && value !== undefined) target[key] = value;
+          } catch { figma.commitUndo(); throw new Error('Update failed and rollback was incomplete. Inspect the node or use Figma Undo.'); }
+          throw new Error(`${error instanceof Error ? error.message : String(error)}. Original shape properties restored.`);
+        }
         figma.commitUndo();
         throw new Error(`${error instanceof Error ? error.message : String(error)}. Some properties may have changed; inspect the node or use Figma Undo.`);
       }
@@ -369,7 +397,7 @@ figma.showUI(__html__, { width: 380, height: 480, themeColors: true });
 let busy = false;
 function publishDocument() {
   figma.ui.postMessage({ type: 'document', document: { name: figma.root.name, page: figma.currentPage.name,
-    pluginVersion: '0.7.4', capabilities: getCapabilities() } });
+    pluginVersion: __PACKAGE_VERSION__, capabilities: getCapabilities() } });
 }
 figma.on('currentpagechange', publishDocument);
 figma.ui.onmessage = async (message: any) => {

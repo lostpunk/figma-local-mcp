@@ -84,6 +84,32 @@ test('shadcn starter is valid input for the implemented style-guide tool', async
   assert.equal(parsed.typography.length, 5);
 });
 
+test('skill update keeps the installed copy when replacement sources are incomplete', async t => {
+  const { root, skillDirectory, run } = await fixture(t);
+  assert.equal(run('--install-skill').status, 0);
+  const skill = join(skillDirectory, 'figma-local-design');
+  const before = await readFile(join(skill, 'SKILL.md'));
+  await writeFile(join(skill, 'custom.md'), 'Keep this customization');
+  await rm(join(root, 'skills/figma-local-design/scripts/install.mjs'));
+  assert.notEqual(run('--install-skill', '--update-skill').status, 0);
+  assert.deepEqual(await readFile(join(skill, 'SKILL.md')), before);
+  assert.equal(await readFile(join(skill, 'custom.md'), 'utf8'), 'Keep this customization');
+  assert.deepEqual(await readdir(skillDirectory), ['figma-local-design']);
+});
+
+test('full package setup saves explicit project choices through the installed wizard', async t => {
+  const { run, directory } = await fixture(t);
+  const project = join(directory, 'design-project');
+  await mkdir(project);
+  const answers = join(directory, 'design-answers.json');
+  await writeFile(answers, JSON.stringify({ designSystem: 'existing' }));
+  const result = run('--install-skill', '--project', project, '--design-answers', answers);
+  assert.equal(result.status, 0, result.stderr);
+  const config = JSON.parse(await readFile(join(project, '.figma-design.json'), 'utf8'));
+  assert.equal(config.onboarding.designSystem, 'existing');
+  assert.equal(config.foundation.colors, undefined);
+});
+
 test('Codex registration passes literal arguments and preserves a conflicting registration', { skip: process.platform === 'win32' }, async t => {
   const { root, skillDirectory, run, env, directory } = await fixture(t);
   const bin = join(directory, 'bin');

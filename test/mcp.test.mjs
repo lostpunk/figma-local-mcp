@@ -6,20 +6,26 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { WebSocket } from 'ws';
 import { pluginHarness } from './plugin-harness.mjs';
-import { mkdtemp, cp, rm, readFile, mkdir, writeFile } from 'node:fs/promises';
+import { mkdtemp, cp, rm, readFile, mkdir, writeFile, symlink, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+const { version: packageVersion } = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
+const { version: skillVersion } = JSON.parse(await readFile(new URL('../skills/figma-local-design/package.json', import.meta.url), 'utf8'));
+
 for (const bundled of [false, true]) test(`MCP → WebSocket → plugin: full workflow (${bundled ? 'portable bundle without node_modules' : 'source'})`, async t => {
-  let entry = fileURLToPath(new URL('../src/server.mjs', import.meta.url));
+  const directory = await realpath(await mkdtemp(join(tmpdir(), 'figma portable $ space-')));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  await mkdir(join(directory, 'generated'));
+  await writeFile(join(directory, 'generated/pairing-key.json'), JSON.stringify({ token: 'c'.repeat(64) }));
+  const entry = join(directory, bundled ? 'runtime/server.mjs' : 'src/server.mjs');
   if (bundled) {
-    const directory = await mkdtemp(join(tmpdir(), 'figma portable $ space-'));
-    t.after(() => rm(directory, { recursive: true, force: true }));
     await mkdir(join(directory, 'runtime'));
-    await mkdir(join(directory, 'generated'));
-    await writeFile(join(directory, 'generated/pairing-key.json'), JSON.stringify({ token: 'c'.repeat(64) }));
-    entry = join(directory, 'runtime/server.mjs');
     await cp(new URL('../runtime/server.mjs', import.meta.url), entry);
+  } else {
+    await cp(new URL('../src/', import.meta.url), join(directory, 'src'), { recursive: true });
+    await cp(new URL('../package.json', import.meta.url), join(directory, 'package.json'));
+    await symlink(fileURLToPath(new URL('../node_modules/', import.meta.url)), join(directory, 'node_modules'), 'junction');
   }
   const transport = new StdioClientTransport({ command: process.execPath,
     args: [entry],
@@ -27,10 +33,13 @@ for (const bundled of [false, true]) test(`MCP → WebSocket → plugin: full wo
   const client = new Client({ name: 'test', version: '1.0.0' });
   t.after(() => client.close());
   await client.connect(transport);
+  assert.equal(client.getServerVersion().version, packageVersion);
   const call = (name, args = {}) => client.callTool({ name, arguments: args });
   const data = result => JSON.parse(result.content[0].text);
   const listed = await client.listTools();
-  assert.equal(listed.tools.length, 29);
+  assert.equal(listed.tools.length, 32);
+  assert.equal(listed.tools.find(t => t.name === 'audit_design').annotations.readOnlyHint, true);
+  assert.equal(listed.tools.find(t => t.name === 'audit_design').annotations.destructiveHint, false);
   assert.equal(listed.tools.find(t => t.name === 'move_component').annotations.readOnlyHint, false);
   assert.equal(listed.tools.find(t => t.name === 'delete_node').annotations.destructiveHint, true);
   assert.equal((await call('get_document')).isError, true);
@@ -38,10 +47,10 @@ for (const bundled of [false, true]) test(`MCP → WebSocket → plugin: full wo
   assert.ok(diagnostic.entries.some(e => e.command === 'get_document' && e.level === 'error'));
   assert.match(diagnostic.logFile, /events\.jsonl$/);
   const connection = data(await call('get_connection'));
-  if (bundled) {
-    assert.equal(connection.pairingMode, 'automatic');
-    assert.equal(connection.pairingCode, undefined);
-  }
+  assert.equal(connection.pairingMode, 'automatic');
+  assert.equal(connection.pairingCode, undefined);
+  assert.ok(!JSON.stringify(connection).includes('c'.repeat(64)));
+  assert.deepEqual(connection.assetAccess.allowedRoots, []);
   const manifest = JSON.parse(await readFile(new URL('../plugin/manifest.json', import.meta.url), 'utf8'));
   const endpoint = new URL(manifest.networkAccess.devAllowedDomains[0]);
   const ui = await readFile(new URL('../plugin/ui.html', import.meta.url), 'utf8');
@@ -52,17 +61,35 @@ for (const bundled of [false, true]) test(`MCP → WebSocket → plugin: full wo
   t.after(() => socket.terminate());
   await once(socket, 'open');
   const ready = once(socket, 'message');
-  socket.send(JSON.stringify({ type: 'hello', token: bundled ? 'c'.repeat(64) : connection.pairingCode }));
-  await ready;
   const h = pluginHarness();
+  const document = await h.getDocument();
+  assert.equal(document.pluginVersion, packageVersion);
+  socket.send(JSON.stringify({ type: 'hello', token: 'c'.repeat(64), document }));
+  assert.equal(JSON.parse((await ready)[0]).serverVersion, packageVersion);
   let dispatchCount = 0;
   socket.on('message', async raw => {
     const command = JSON.parse(raw);
+    if (command.type !== 'command') return;
     dispatchCount++;
     const result = await h.call(command.command, command.args);
     socket.send(JSON.stringify({ ...result, id: command.id }));
   });
   assert.equal(data(await call('get_document')).name, 'Test file');
+  const checked = data(await call('get_connection', { skillVersion }));
+  assert.equal(checked.readiness.ready, true);
+  assert.deepEqual(checked.readiness.versions, { server: packageVersion, plugin: packageVersion, skill: packageVersion });
+  assert.equal(checked.readiness.skillVersionChecked, true);
+  const retryArgs = { _operationId: checked.nextOperationId, type: 'RECTANGLE', props: { name: 'Exactly once' } };
+  const first = data(await call('create_node', retryArgs));
+  const countAfterFirst = dispatchCount;
+  assert.equal(data(await call('create_node', retryArgs)).id, first.id);
+  assert.equal(dispatchCount, countAfterFirst);
+  assert.equal(data(await call('get_operation', { operationId: checked.nextOperationId })).result.id, first.id);
+  await call('get_connection', { skillVersion: '0.7.3' });
+  assert.equal((await call('create_node', { type: 'RECTANGLE' })).isError, true);
+  assert.equal(dispatchCount, countAfterFirst, 'skill mismatch blocks writes before dispatch');
+  await call('get_connection', { skillVersion });
+
   const create = await call('create_node', { type: 'TEXT', props: { characters: 'Hello', fontSize: 24 } });
   assert.equal(create.isError, undefined);
   const nodeId = data(create).id;
@@ -71,11 +98,44 @@ for (const bundled of [false, true]) test(`MCP → WebSocket → plugin: full wo
   assert.equal((await call('export_node', { nodeId })).content[0].type, 'image');
   assert.equal(data(await call('export_node', { nodeId, format: 'SVG' })).svg, '<svg/>');
   const imageTarget = data(await call('create_node', { type: 'RECTANGLE' })).id;
-  const imagePath = join(tmpdir(), `figma-local-image-${process.pid}-${Date.now()}.png`);
+  const assetDir = join(directory, 'assets');
+  await mkdir(assetDir);
+  const imagePath = join(assetDir, 'photo.png');
   t.after(() => rm(imagePath, { force: true }));
   await writeFile(imagePath, Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLwvwAAAABJRU5ErkJggg==', 'base64'));
+  const dispatchBeforeDenied = dispatchCount;
+  for (const [name, args] of [
+    ['set_image_fill_from_path', { nodeId: imageTarget, imagePath }],
+    ['import_image', { filePath: imagePath }],
+    ['import_svg', { filePath: imagePath }],
+  ]) {
+    const denied = await call(name, args);
+    assert.equal(denied.isError, true);
+    assert.match(denied.content[0].text, /disabled/);
+  }
+  assert.equal(dispatchCount, dispatchBeforeDenied);
+  await writeFile(join(directory, 'generated/asset-access.json'), JSON.stringify({ version: 1, allowedRoots: [assetDir] }));
   const imported = data(await call('set_image_fill_from_path', { nodeId: imageTarget, imagePath }));
   assert.equal(imported.source.mimeType, 'image/png');
+  assert.equal((await call('import_image', { filePath: imagePath, parentId: h.page.id })).isError, undefined);
+  const svgPath = join(assetDir, 'icon.svg');
+  await writeFile(svgPath, '<svg><path d="M0 0L10 10"/></svg>');
+  assert.equal((await call('import_svg', { filePath: svgPath, parentId: h.page.id })).isError, undefined);
+  const outsidePath = join(directory, 'outside.png');
+  await cp(imagePath, outsidePath);
+  const beforeOutside = dispatchCount;
+  for (const [name, args] of [
+    ['set_image_fill_from_path', { nodeId: imageTarget, imagePath: outsidePath }],
+    ['import_image', { filePath: outsidePath }], ['import_svg', { filePath: outsidePath }],
+  ]) {
+    const denied = await call(name, args);
+    assert.equal(denied.isError, true);
+    assert.match(denied.content[0].text, /outside/);
+  }
+  assert.equal(dispatchCount, beforeOutside);
+  await writeFile(join(directory, 'generated/asset-access.json'), JSON.stringify({ version: 1, allowedRoots: [] }));
+  assert.equal((await call('set_image_fill_from_path', { nodeId: imageTarget, imagePath })).isError, true);
+  assert.equal(dispatchCount, beforeOutside, 'revocation takes effect without server restart');
   const before = dispatchCount;
   assert.equal((await call('update_node', { nodeId, props: { width: -2 } })).isError, true);
   assert.equal((await call('update_node', { nodeId, props: { arbitraryCode: 'x' } })).isError, true);
@@ -89,6 +149,11 @@ for (const bundled of [false, true]) test(`MCP → WebSocket → plugin: full wo
   assert.equal(failedReadLog.filter(e => e.command === 'get_node' && e.sessionId === failedRead.sessionId).length, 1,
     'one failed plugin call produces one error event, while pre-dispatch errors remain logged');
   const guide = data(await call('create_style_guide', { name: 'Demo' }));
+  const syncPreview = data(await call('sync_style_guide', { collectionId: guide.collectionId, colors: [{ name: 'surface', value: '#eeeeee' }] }));
+  assert.equal(syncPreview.dryRun, true);
+  assert.equal(syncPreview.changes[0].action, 'update');
+  const syncApplied = data(await call('sync_style_guide', { collectionId: guide.collectionId, dryRun: false, colors: [{ name: 'surface', value: '#eeeeee' }] }));
+  assert.equal(syncApplied.changes[0].id, syncPreview.changes[0].id);
   assert.equal(guide.colors.length, 10);
   const brand = guide.colors.find(t => t.name === 'brand/primary');
   const page = data(await call('create_page', { name: 'Screens' }));
@@ -123,4 +188,10 @@ for (const bundled of [false, true]) test(`MCP → WebSocket → plugin: full wo
     { componentId: scene.nodes[0].id, properties: { State: 'A' } }, { componentId: scene.nodes[0].id, properties: { State: 'A' } },
   ] })).isError, true);
   assert.equal(dispatchCount, dispatched, 'invalid assets and variant definitions never reach Figma');
+  const undoBeforeAudit = h.undoCount;
+  const quality = data(await call('audit_design', { nodeId: page.id, checkTextStyles: false }));
+  assert.equal(quality.readOnly, true);
+  assert.equal(quality.complete, true);
+  assert.ok(quality.coverage.visited > 0);
+  assert.equal(h.undoCount, undoBeforeAudit);
 });

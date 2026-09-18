@@ -1,20 +1,28 @@
-import { access, cp, mkdir, writeFile } from 'node:fs/promises';
+import { access, cp, mkdir, mkdtemp, rename, rm, writeFile } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { prepareLocalPlugin } from './local-plugin.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const flags = new Set(process.argv.slice(2));
-for (const flag of flags) {
-  if (!['--codex', '--register-mcp', '--install-skill', '--update-skill', '--help'].includes(flag)) throw new Error(`Unknown option: ${flag}`);
+const flags = new Set();
+const options = {};
+const argv = process.argv.slice(2);
+for (let i = 0; i < argv.length; i++) {
+  const flag = argv[i];
+  if (['--codex', '--register-mcp', '--install-skill', '--update-skill', '--help', '--non-interactive'].includes(flag)) flags.add(flag);
+  else if (['--project', '--design-answers'].includes(flag) && argv[i + 1] && !argv[i + 1].startsWith('--')) options[flag] = argv[++i];
+  else throw new Error(`Unknown option or missing value: ${flag}`);
 }
 if (flags.has('--help')) {
-  console.log('node scripts/setup.mjs [--codex | --register-mcp | --install-skill] [--update-skill]\nNo flags: generate MCP configuration and an automatically paired local plugin.\n--codex: register figma_local in Codex and install the skill.\n--register-mcp: register MCP and prepare the plugin without replacing a skill.\n--install-skill: install skill without changing MCP configuration.\n--update-skill: back up and replace a previously installed standalone skill.');
+  console.log('node scripts/setup.mjs [--codex | --register-mcp | --install-skill] [--update-skill] [--project PATH] [--design-answers FILE] [--non-interactive]\nNo flags: generate MCP configuration and an automatically paired local plugin.\n--codex: register figma_local in Codex and install the skill.\n--register-mcp: register MCP and prepare the plugin without replacing a skill.\n--install-skill: install skill without changing MCP configuration.\n--update-skill: back up and replace a previously installed standalone skill.\nProject options require --codex or --install-skill; existing project rules are preserved.');
   process.exit(0);
 }
+const installSkill = flags.has('--codex') || flags.has('--install-skill');
+if ((options['--project'] || options['--design-answers']) && !installSkill) throw new Error('Project setup requires --codex or --install-skill');
+if (options['--design-answers'] && !options['--project']) throw new Error('--design-answers requires --project');
 if (Number(process.versions.node.split('.')[0]) < 22) throw new Error('Node.js 22+ is required');
 await access(join(root, 'runtime/server.mjs'), constants.R_OK);
 await access(join(root, 'plugin/code.js'), constants.R_OK);
@@ -30,7 +38,6 @@ const skillName = 'figma-local-design';
 const skillRoot = process.env.FIGMA_LOCAL_SKILL_DIR || join(process.env.CODEX_HOME || join(homedir(), '.codex'), 'skills');
 const destination = join(skillRoot, skillName);
 async function exists(path) { try { await access(path); return true; } catch { return false; } }
-const installSkill = flags.has('--codex') || flags.has('--install-skill');
 if (installSkill && await exists(destination) && !flags.has('--update-skill')) {
   throw new Error(`Skill already exists at ${destination}. To update it with a backup, repeat with --update-skill. No MCP configuration was changed.`);
 }
@@ -59,18 +66,43 @@ if (flags.has('--codex') || flags.has('--register-mcp')) {
 }
 if (installSkill) {
   await mkdir(skillRoot, { recursive: true });
-  if (await exists(destination)) {
-    const backup = join(root, 'generated', `${skillName}-backup-${Date.now()}`);
-    await cp(destination, backup, { recursive: true, errorOnExist: true, force: false });
-    // Keep backup outside the skills discovery root to avoid duplicate skills.
-    // cp rather than rename across filesystems; replacement below is explicit.
-    const { rm } = await import('node:fs/promises');
-    await rm(destination, { recursive: true });
-    console.log(`Previous skill backed up to ${backup}`);
+  // Stage outside the discovery root, but on the same filesystem as the skill.
+  const staging = await mkdtemp(join(dirname(skillRoot), '.figma-skill-'));
+  const prepared = join(staging, 'prepared'), previous = join(staging, 'previous');
+  let retainRecovery = false;
+  try {
+    await cp(join(root, 'skills', skillName), prepared, { recursive: true, errorOnExist: true, force: false });
+    await access(join(prepared, 'SKILL.md'), constants.R_OK);
+    await access(join(prepared, 'scripts/install.mjs'), constants.R_OK);
+    await writeFile(join(prepared, 'installation.json'), JSON.stringify({ packageRoot: root }, null, 2) + '\n');
+    const replacing = await exists(destination);
+    if (replacing) {
+      const backup = await mkdtemp(join(output, `${skillName}-backup-`));
+      await cp(destination, backup, { recursive: true });
+      console.log(`Previous skill backed up to ${backup}`);
+      await rename(destination, previous);
+    }
+    try { await rename(prepared, destination); }
+    catch (error) {
+      if (replacing) {
+        try { await rename(previous, destination); }
+        catch (rollbackError) {
+          retainRecovery = true;
+          throw new Error(`Skill replacement failed; restore the previous skill from ${previous}. ${rollbackError.message}`, { cause: error });
+        }
+      }
+      throw error;
+    }
+  } finally {
+    if (!retainRecovery) await rm(staging, { recursive: true, force: true });
   }
-  await cp(join(root, 'skills', skillName), destination, { recursive: true, errorOnExist: true, force: false });
-  await writeFile(join(destination, 'installation.json'), JSON.stringify({ packageRoot: root }, null, 2) + '\n');
   console.log(`Skill installed: ${destination}`);
 }
 const manifest = await prepareLocalPlugin(root);
 console.log(`MCP configuration: ${join(output, 'mcp.json')}\nCodex configuration: ${join(output, 'codex.toml')}\nFigma manifest: ${manifest}\nKeep this folder in place. Restart your MCP client and run this Figma plugin: it connects automatically. Share only the release ZIP, not generated/.`);
+if (installSkill) {
+  const { onboardProject } = await import(pathToFileURL(join(destination, 'scripts/onboarding.mjs')).href);
+  const design = await onboardProject({ projectRoot: options['--project'], answersFile: options['--design-answers'],
+    interactive: !flags.has('--non-interactive') && !!process.stdin.isTTY && !!process.stdout.isTTY });
+  console.log(`Project design setup:\n${JSON.stringify(design, null, 2)}`);
+}

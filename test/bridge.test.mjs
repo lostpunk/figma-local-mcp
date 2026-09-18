@@ -2,9 +2,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import { WebSocket } from 'ws';
-import { createBridge } from '../src/bridge.mjs';
+import { createBridge as createBridgeImpl } from '../src/bridge.mjs';
+const testToken = 'a'.repeat(64);
+const createBridge = options => createBridgeImpl({ installationToken: testToken, ...options });
 
-async function pair(bridge, token = bridge.info().pairingCode) {
+async function pair(bridge, token = testToken) {
   const socket = new WebSocket(`ws://127.0.0.1:${bridge.info().port}`, { origin: 'null' });
   await once(socket, 'open');
   const ready = once(socket, 'message');
@@ -15,11 +17,13 @@ async function pair(bridge, token = bridge.info().pairingCode) {
 test('installation key survives bridge restarts and still requires authentication', async t => {
   const installationToken = 'b'.repeat(64);
   await assert.rejects(createBridge({ port: 0, installationToken: '' }), /Invalid installation token/);
+  await assert.rejects(createBridgeImpl({ port: 0 }), /Run scripts\/setup/);
   for (let i = 0; i < 2; i++) {
     const bridge = await createBridge({ port: 0, installationToken });
     try {
       assert.equal(bridge.info().pairingMode, 'automatic');
       assert.equal(bridge.info().pairingCode, undefined);
+      assert.ok(!JSON.stringify(bridge.info()).includes(installationToken));
       await pair(bridge, installationToken);
       assert.equal(bridge.info().connected, true);
     } finally { await bridge.close(); }
@@ -89,7 +93,7 @@ test('second plugin cannot displace current session', async t => {
   const socket = new WebSocket(`ws://127.0.0.1:${bridge.info().port}`);
   const closed = once(socket, 'close');
   await once(socket, 'open');
-  socket.send(JSON.stringify({ type: 'hello', token: bridge.info().pairingCode }));
+  socket.send(JSON.stringify({ type: 'hello', token: testToken }));
   assert.equal((await closed)[0], 1008);
   assert.equal(bridge.info().connected, true);
 });
@@ -106,4 +110,58 @@ test('authenticated document updates refresh connection metadata', async t => {
   await response;
   assert.equal(bridge.info().document.page, 'Screens');
   assert.equal(bridge.info().document.capabilities.pageCount, 3);
+});
+
+test('same write ID is dispatched once and late results are recoverable', { timeout: 3000 }, async t => {
+  const done = Promise.withResolvers();
+  const bridge = await createBridge({ port: 0, timeoutMs: 40, diagnostics: { record: (_l, e) => { if (e === 'plugin_late_result') done.resolve(); } } });
+  t.after(() => bridge.close());
+  const socket = await pair(bridge);
+  let dispatched = 0; socket.on('message', raw => { if (JSON.parse(raw).type === 'command') dispatched++; });
+  const operationId = bridge.info().nextOperationId;
+  const received = once(socket, 'message');
+  const response = bridge.request('create_node', { name: 'A' }, { write: true, operationId });
+  await received;
+  await assert.rejects(bridge.request('create_node', { name: 'A' }, { write: true, operationId }), /not replayed/);
+  await assert.rejects(response, /timed out/);
+  assert.equal(bridge.getOperation(operationId).status, 'waiting_result');
+  await assert.rejects(bridge.request('create_node', { name: 'B' }, { write: true, operationId }), /different arguments/);
+  socket.send(JSON.stringify({ type: 'result', id: operationId, result: { id: '2:3' } }));
+  await done.promise;
+  assert.deepEqual(bridge.getOperation(operationId).result, { id: '2:3' });
+  assert.deepEqual(await bridge.request('create_node', { name: 'A' }, { write: true, operationId }), { id: '2:3' });
+  assert.equal(dispatched, 1);
+});
+
+test('lost write stays unknown and only its original plugin session can recover it', async t => {
+  const events = [];
+  const bridge = await createBridge({ port: 0, diagnostics: { record: (_l, e) => events.push(e) } });
+  t.after(() => bridge.close());
+  async function connect(pluginSessionId) {
+    const s = new WebSocket(`ws://127.0.0.1:${bridge.info().port}`);
+    await once(s, 'open'); const ready = once(s, 'message');
+    s.send(JSON.stringify({ type: 'hello', token: testToken, pluginSessionId })); await ready; return s;
+  }
+  const s = await connect('original');
+  const operationId = bridge.info().nextOperationId;
+  const received = once(s, 'message');
+  const response = bridge.request('create_node', {}, { write: true, operationId });
+  const rejected = assert.rejects(response, /disconnected/);
+  await received; s.close(); await rejected;
+  assert.equal(bridge.getOperation(operationId).status, 'unknown');
+  const other = await connect('other');
+  other.send(JSON.stringify({ type: 'recovered_result', id: operationId, result: { fake: true } }));
+  // A following normal read response gives a deterministic ordering barrier.
+  async function barrier(s) {
+    const incoming = once(s, 'message'); const result = bridge.request('get_document', {});
+    const msg = JSON.parse((await incoming)[0]); s.send(JSON.stringify({ type: 'result', id: msg.id, result: {} })); await result;
+  }
+  await barrier(other);
+  assert.equal(bridge.getOperation(operationId).status, 'unknown');
+  const closed = once(other, 'close'); other.close(); await closed;
+  const original = await connect('original');
+  original.send(JSON.stringify({ type: 'recovered_result', id: operationId, result: { id: '3:4' } }));
+  await barrier(original);
+  assert.deepEqual(bridge.getOperation(operationId).result, { id: '3:4' });
+  assert.ok(events.includes('operation_recovered'));
 });

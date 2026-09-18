@@ -1,4 +1,6 @@
-import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
+import { randomUUID, timingSafeEqual } from 'node:crypto';
+import { createOperations } from './operations.mjs';
+import { VERSION, readiness } from './readiness.mjs';
 import { WebSocketServer, WebSocket } from 'ws';
 
 export class BridgeOperationError extends Error {
@@ -11,12 +13,12 @@ export class BridgeOperationError extends Error {
   }
 }
 
-// No HTTP API, external requests, or Figma access token.
-export async function createBridge({ port = 3055, timeoutMs = 120000, installationToken, diagnostics } = {}) {
+// Local WebSocket transport only; no external requests or Figma access token.
+export async function createBridge({ port = 3055, timeoutMs = 120000, installationToken, diagnostics, onLocalClient } = {}) {
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 600000) throw new Error('Invalid Figma bridge operation timeout');
   const log = (level, event, fields) => diagnostics?.record(level, event, fields);
-  if (installationToken !== undefined && !/^[a-f0-9]{64}$/.test(installationToken)) throw new Error('Invalid installation token');
-  const token = installationToken ?? randomBytes(32).toString('hex');
+  if (typeof installationToken !== 'string' || !/^[a-f0-9]{64}$/.test(installationToken)) throw new Error('Invalid installation token. Run scripts/setup.mjs and import the generated plugin.');
+  const token = installationToken;
   const wss = new WebSocketServer({ host: '127.0.0.1', port, maxPayload: 16 * 1024 * 1024 });
   await new Promise((resolve, reject) => {
     wss.once('listening', resolve);
@@ -26,16 +28,24 @@ export async function createBridge({ port = 3055, timeoutMs = 120000, installati
   let pending;
   let timedOut;
   let document;
+  let pluginSessionId;
+  const operations = createOperations();
   log('info', 'bridge_started');
   wss.on('error', error => log('error', 'bridge_error', { code: error.code, message: error.message }));
   function failPending(message, code = 'CONNECTION_LOST') {
     if (!pending) return;
     log('error', 'operation_failed', { requestId: pending.id, command: pending.command, durationMs: Date.now() - pending.startedAt, code, message, outcome: 'unknown' });
+    if (pending.record) pending.record.status = code === 'TIMEOUT' ? 'waiting_result' : 'unknown';
     clearTimeout(pending.timer);
     pending.reject(new BridgeOperationError(message, pending.id, code, Boolean(diagnostics)));
     pending = undefined;
   }
   wss.on('connection', (socket, request) => {
+    if (request.url === '/mcp-bridge') {
+      if (onLocalClient && !request.headers.origin) onLocalClient(socket);
+      else socket.close(1008, 'Local clients only');
+      return;
+    }
     // Figma's plugin iframe has an opaque (null) origin. Token authentication
     // is mandatory even for this origin; origin alone is never trusted.
     const origin = request.headers.origin;
@@ -63,8 +73,9 @@ export async function createBridge({ port = 3055, timeoutMs = 120000, installati
         clearTimeout(authTimer);
         peer = socket;
         document = message.document;
+        pluginSessionId = typeof message.pluginSessionId === 'string' ? message.pluginSessionId : undefined;
         log('info', 'plugin_connected', { pluginVersion: document?.pluginVersion });
-        socket.send(JSON.stringify({ type: 'ready' }));
+        socket.send(JSON.stringify({ type: 'ready', serverVersion: VERSION, serverSessionId: operations.sessionId }));
         return;
       }
       if (message.type === 'document' && peer === socket) document = message.document;
@@ -75,12 +86,26 @@ export async function createBridge({ port = 3055, timeoutMs = 120000, installati
           outcome: message.failed ? 'plugin_error' : 'plugin_completed',
         });
       }
+      if (message.type === 'recovered_result' && peer === socket && pluginSessionId) {
+        try {
+          const record = operations.lookup(message.id);
+          if (record.pluginSessionId === pluginSessionId && ['unknown', 'waiting_result', 'completed', 'failed'].includes(record.status)) {
+            if (['unknown', 'waiting_result'].includes(record.status)) operations.finish(message.id, message);
+            socket.send(JSON.stringify({ type: 'result_ack', id: message.id }));
+            log('info', 'operation_recovered', { requestId: message.id, command: record.command, outcome: record.status });
+          }
+        } catch { /* Previous server sessions cannot be recovered. */ }
+      }
       if (message.type === 'result' && timedOut && message.id === timedOut.id && timedOut.socket === socket) {
         log(typeof message.error === 'string' ? 'error' : 'warn', 'plugin_late_result', { requestId: timedOut.id, command: timedOut.command, durationMs: Date.now() - timedOut.startedAt, message: typeof message.error === 'string' ? message.error : undefined, outcome: typeof message.error === 'string' ? 'plugin_error' : 'plugin_completed' });
+        operations.finish(timedOut.id, message);
+        if (timedOut.record) socket.send(JSON.stringify({ type: 'result_ack', id: message.id }));
         timedOut = undefined;
       }
       if (message.type === 'result' && pending && message.id === pending.id) {
         const current = pending;
+        operations.finish(current.id, message);
+        if (current.record) socket.send(JSON.stringify({ type: 'result_ack', id: message.id }));
         pending = undefined;
         clearTimeout(current.timer);
         log(typeof message.error === 'string' ? 'error' : 'info', 'operation_result', {
@@ -105,27 +130,41 @@ export async function createBridge({ port = 3055, timeoutMs = 120000, installati
     });
   });
   return {
-    info() {
+    getOperation(id) { return operations.view(id); },
+    info(skillVersion) {
+      const operation = pending ? 'running' : timedOut ? 'timed_out_waiting_result' : 'idle';
       return { connected: peer?.readyState === WebSocket.OPEN, port: wss.address().port,
-        ...(installationToken ? {} : { pairingCode: token }), operation: pending ? 'running' : timedOut ? 'timed_out_waiting_result' : 'idle', pairingMode: installationToken ? 'automatic' : 'manual', document,
-        instructions: installationToken
-          ? 'Run the plugin imported from generated/figma-plugin/manifest.json. It connects automatically. Keep its window open.'
-          : 'Open the development plugin in Figma Desktop and paste pairingCode. Keep its window open.' };
+        operation,
+        serverSessionId: operations.sessionId, nextOperationId: operations.nextId(),
+        activeOperation: (pending ?? timedOut) ? { operationId: (pending ?? timedOut).id, command: (pending ?? timedOut).command, elapsedMs: Date.now() - (pending ?? timedOut).startedAt } : null,
+        readiness: readiness({ connected: peer?.readyState === WebSocket.OPEN, document, operation, skillVersion }), pairingMode: 'automatic', document,
+        instructions: 'Run the plugin imported from generated/figma-plugin/manifest.json. It connects automatically. Keep its window open.' };
     },
-    request(command, args) {
+    request(command, args, { operationId, write = false } = {}) {
+      if (write && operationId) {
+        try {
+          const previous = operations.existing(operationId, command, args);
+          if (previous) {
+            if (previous.status === 'completed' && !previous.resultExpired) return Promise.resolve(previous.result);
+            const message = previous.status === 'failed' ? previous.error : `Operation is ${previous.status}${previous.resultExpired ? '; result expired' : ''}. Inspect get_operation; the edit was not replayed.`;
+            return Promise.reject(new BridgeOperationError(message, operationId, 'OPERATION_NOT_REPLAYED', false));
+          }
+        } catch (error) { return Promise.reject(error); }
+      }
       if (!peer || peer.readyState !== WebSocket.OPEN) return Promise.reject(new Error('Figma plugin is not connected. Call get_connection and pair the plugin.'));
       if (pending) return Promise.reject(new Error('A Figma operation is running. Wait for its result before the next call.'));
       if (timedOut) return Promise.reject(new Error('The previous Figma operation timed out and may still be running. Wait for the plugin result; if it never arrives, reconnect the plugin before retrying.'));
       return new Promise((resolve, reject) => {
-        const id = randomUUID();
+        const id = write ? operationId ?? operations.nextId() : randomUUID();
+        const record = write ? operations.start(id, command, args, pluginSessionId) : undefined;
         const startedAt = Date.now();
         log('info', 'operation_started', { requestId: id, command });
         const timer = setTimeout(() => {
           if (!pending || pending.id !== id) return;
-          timedOut = { id, socket: peer, command, startedAt };
+          timedOut = { id, socket: peer, command, startedAt, record };
           failPending('Figma operation timed out. Its outcome is unknown; the plugin remains connected while its result is awaited. Inspect the file before retrying an edit.', 'TIMEOUT');
         }, timeoutMs);
-        pending = { id, resolve, reject, timer, command, startedAt };
+        pending = { id, resolve, reject, timer, command, startedAt, record };
         peer.send(JSON.stringify({ type: 'command', id, command, args }), error => {
           if (error && pending?.id === id) failPending(`Failed to dispatch command: ${error.message}`);
         });

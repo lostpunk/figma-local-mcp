@@ -88,3 +88,75 @@ test('component instances reject recursive placement', async () => {
   assert.match((await h.call('create_instance', { componentId: component.id, parentId: child.id, props: {} })).error, /own component/);
   assert.equal(h.nodes.size, size);
 });
+
+test('local color and numeric bindings work when lookup by ID cannot reach Figma', async () => {
+  const h = pluginHarness();
+  const guide = (await h.call('create_style_guide', guideArgs())).result;
+  const node = h.node('FRAME', 'Before', h.page);
+  let lists = 0;
+  let lookups = 0;
+  const list = h.figma.variables.getLocalVariablesAsync;
+  h.figma.variables.getLocalVariablesAsync = async () => { lists++; return list(); };
+  h.figma.variables.getVariableByIdAsync = async () => {
+    lookups++;
+    throw new Error('Unable to establish connection to Figma after 10 seconds');
+  };
+  const response = await h.call('update_node', { nodeId: node.id, props: {
+    name: 'Bound', fillVariableId: guide.colors[0].id, strokeVariableId: guide.colors[1].id,
+    variableBindings: { width: guide.spacing[0].id, height: guide.spacing[1].id },
+  } });
+  assert.equal(response.error, undefined);
+  assert.equal(node.name, 'Bound');
+  assert.equal(node.fills[0].boundVariables.color.id, guide.colors[0].id);
+  assert.equal(node.strokes[0].boundVariables.color.id, guide.colors[1].id);
+  assert.equal(node.boundVariables.width.id, guide.spacing[0].id);
+  assert.equal(node.boundVariables.height.id, guide.spacing[1].id);
+  assert.equal(lists, 1);
+  assert.equal(lookups, 0);
+});
+
+test('variable preparation failure leaves a complex node and undo history unchanged', async () => {
+  const h = pluginHarness();
+  const node = h.node('FRAME', 'Before', h.page);
+  const child = h.node('RECTANGLE', 'Keep', node);
+  const original = JSON.stringify({ name: node.name, height: node.height, fills: node.fills });
+  h.figma.variables.getLocalVariablesAsync = async () => { throw new Error('Network unavailable'); };
+  const response = await h.call('update_node', { nodeId: node.id,
+    props: { name: 'After', height: 620, fillVariableId: 'variable:missing' } });
+  assert.match(response.error, /LOCAL_VARIABLES_UNAVAILABLE/);
+  assert.match(response.error, /No properties changed/);
+  assert.doesNotMatch(response.error, /Some properties may have changed/);
+  assert.equal(JSON.stringify({ name: node.name, height: node.height, fills: node.fills }), original);
+  assert.deepEqual(node.children.map(n => n.id), [child.id]);
+  assert.equal(h.undoCount, 0);
+});
+
+test('variable resolver preserves accessible library bindings and reports failed remote lookup', async () => {
+  const h = pluginHarness();
+  const node = h.node('RECTANGLE', 'Before', h.page);
+  const remote = { id: 'remote:1', resolvedType: 'COLOR', remote: true };
+  h.figma.variables.getVariableByIdAsync = async id => id === remote.id ? remote : null;
+  assert.equal((await h.call('update_node', { nodeId: node.id,
+    props: { fillVariableId: remote.id } })).error, undefined);
+  assert.equal(node.fills[0].boundVariables.color.id, remote.id);
+  h.figma.variables.getVariableByIdAsync = async () => { throw new Error('Network unavailable'); };
+  const response = await h.call('update_node', { nodeId: node.id,
+    props: { name: 'After', fillVariableId: 'missing' } });
+  assert.match(response.error, /VARIABLE_LOOKUP_FAILED/);
+  assert.match(response.error, /No properties changed/);
+  assert.equal(node.name, 'Before');
+  assert.equal(node.fills[0].boundVariables.color.id, remote.id);
+});
+
+test('local token updates avoid ID lookups and do not reuse removed variables across commands', async () => {
+  const h = pluginHarness();
+  const guide = (await h.call('create_style_guide', guideArgs())).result;
+  const id = guide.colors[0].id;
+  h.figma.variables.getVariableByIdAsync = async () => { throw new Error('Unexpected ID lookup'); };
+  h.figma.variables.getVariableCollectionByIdAsync = async () => { throw new Error('Unexpected collection lookup'); };
+  const response = await h.call('set_variable', { variableId: id, value: '#123456' });
+  assert.equal(response.error, undefined);
+  assert.equal(h.variables.get(id).valuesByMode['mode:1'].r, 0x12 / 255);
+  h.variables.get(id).remove();
+  assert.match((await h.call('set_variable', { variableId: id, value: '#ffffff' })).error, /Local variable not found/);
+});

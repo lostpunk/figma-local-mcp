@@ -1,6 +1,6 @@
 {
   "name": "figma-local-mcp",
-  "version": "0.7.4",
+  "version": "0.7.17",
   "private": true,
   "type": "module",
   "engines": {
@@ -12,7 +12,8 @@
     "test": "npm run build && node --test test/*.test.mjs",
     "setup": "node scripts/setup.mjs",
     "pack:skillstore": "npm run build && node scripts/package-skillstore.mjs",
-    "release": "npm test && node scripts/package-skillstore.mjs && python3 scripts/package.py"
+    "release": "node scripts/release.mjs",
+    "release:local": "node scripts/release.mjs --install-local"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",

@@ -1,10 +1,12 @@
 import { cp, lstat, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { realpathSync } from 'node:fs';
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const source = join(root, 'skills', 'figma-local-design');
 const output = join(root, 'dist', 'skillstore', 'figma-local-design');
+
 const files = [
   'SKILL.md',
   'version.json',
@@ -13,6 +15,9 @@ const files = [
   'scripts/install.mjs',
   'scripts/setup.mjs',
   'scripts/local-plugin.mjs',
+  'scripts/asset-access.mjs',
+  'scripts/project-rules.mjs',
+  'scripts/onboarding.mjs',
 ];
 const directories = ['assets', 'references', 'runtime', 'plugin', 'src'];
 const forbidden = new Set(['.github', '.git', '.skillstore-meta.json', 'installation.json']);
@@ -32,19 +37,13 @@ function publicOrigin(value) {
   }
 }
 
-async function sanitizeNoticeLinks(path) {
-  const content = await readFile(path, 'utf8');
-  await writeFile(path, content.replace(externalUrl, publicOrigin));
-}
-
-async function sanitizeRuntime(path) {
-  let content = await readFile(path, 'utf8');
-  content = content.split('\n').map(line => /^\s*(?:\/\/|\*)/.test(line) ? line.replace(externalUrl, publicOrigin) : line).join('\n');
-  // These are Ajv's local schema identity strings, not network endpoints. In
-  // the Store-only bundle they are replaced consistently, because its static
-  // link policy rejects URL fragments even when no request can occur.
+export function normalizeStoreFile(path, data) {
+  if (path === 'runtime/THIRD_PARTY_NOTICES.md') return Buffer.from(data.toString().replace(externalUrl, publicOrigin));
+  if (!['runtime/server.mjs', 'scripts/project-rules.mjs', 'scripts/onboarding.mjs'].includes(path)) return data;
+  let content = data.toString().split('\n').map(line => /^\s*(?:\/\/|\*)/.test(line) ? line.replace(externalUrl, publicOrigin) : line).join('\n');
+  // Schema identities remain local and are replaced consistently in this copy.
   for (const [source, alias] of schemaIdAliases) content = content.replaceAll(source, alias);
-  await writeFile(path, content);
+  return Buffer.from(content);
 }
 
 async function validate(directory) {
@@ -58,6 +57,7 @@ async function validate(directory) {
   }
 }
 
+export async function packageStore() {
 await rm(join(root, 'dist', 'skillstore'), { recursive: true, force: true });
 await mkdir(output, { recursive: true });
 for (const path of files) {
@@ -70,7 +70,14 @@ for (const directory of directories) await cp(join(source, directory), join(outp
 // hashes, issue IDs, fragments). They are not used by the local runtime, and
 // SkillStore forbids publishing such links. Keep the code and notices readable,
 // while reducing those references to their public origin in the Store-only copy.
-await sanitizeRuntime(join(output, 'runtime', 'server.mjs'));
-await sanitizeNoticeLinks(join(output, 'runtime', 'THIRD_PARTY_NOTICES.md'));
+for (const path of ['runtime/server.mjs', 'scripts/project-rules.mjs', 'scripts/onboarding.mjs', 'runtime/THIRD_PARTY_NOTICES.md']) {
+  await writeFile(join(output, path), normalizeStoreFile(path, await readFile(join(output, path))));
+}
 await validate(output);
 console.log(`SkillStore package ready: ${output}`);
+
+}
+if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  if (process.argv.length > 2) throw new Error('Usage: package-skillstore.mjs');
+  await packageStore();
+}
