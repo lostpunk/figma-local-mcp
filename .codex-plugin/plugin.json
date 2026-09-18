@@ -1,6 +1,6 @@
 {
   "name": "figma-local-mcp",
-  "version": "0.7.18",
+  "version": "0.7.24",
   "description": "Local Figma MCP with a design skill, configurable UI-library rules and style-guide creation.",
   "author": {
     "name": "Figma Local MCP contributors"

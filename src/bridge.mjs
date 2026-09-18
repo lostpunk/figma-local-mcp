@@ -1,5 +1,6 @@
 import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { createOperations } from './operations.mjs';
+import { createOperationHistory } from './operation-history.mjs';
 import { VERSION, readiness } from './readiness.mjs';
 import { WebSocketServer, WebSocket } from 'ws';
 
@@ -14,7 +15,7 @@ export class BridgeOperationError extends Error {
 }
 
 // Local WebSocket transport only; no external requests or Figma access token.
-export async function createBridge({ port = 3055, timeoutMs = 120000, installationToken, diagnostics, onLocalClient } = {}) {
+export async function createBridge({ port = 3055, timeoutMs = 120000, installationToken, diagnostics, onLocalClient, historyDirectory } = {}) {
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 600000) throw new Error('Invalid Figma bridge operation timeout');
   const log = (level, event, fields) => diagnostics?.record(level, event, fields);
   if (typeof installationToken !== 'string' || !/^[a-f0-9]{64}$/.test(installationToken)) throw new Error('Invalid installation token. Run scripts/setup.mjs and import the generated plugin.');
@@ -29,13 +30,20 @@ export async function createBridge({ port = 3055, timeoutMs = 120000, installati
   let timedOut;
   let document;
   let pluginSessionId;
-  const operations = createOperations();
+  let operations;
+  try {
+    operations = createOperations({ history: historyDirectory ? createOperationHistory({ directory: historyDirectory, port: wss.address().port, installationToken }) : undefined });
+  } catch (error) { await new Promise(resolve => wss.close(resolve)); throw error; }
+  function historyHealth() {
+    if (!operations.info().healthy) log('error', 'operation_history_unavailable', { code: 'HISTORY_WRITE_FAILED', outcome: 'inspect_after_error' });
+    return operations.info();
+  }
   log('info', 'bridge_started');
   wss.on('error', error => log('error', 'bridge_error', { code: error.code, message: error.message }));
   function failPending(message, code = 'CONNECTION_LOST') {
     if (!pending) return;
     log('error', 'operation_failed', { requestId: pending.id, command: pending.command, durationMs: Date.now() - pending.startedAt, code, message, outcome: 'unknown' });
-    if (pending.record) pending.record.status = code === 'TIMEOUT' ? 'waiting_result' : 'unknown';
+    if (pending.record) { operations.mark(pending.id, code === 'TIMEOUT' ? 'waiting_result' : 'unknown'); historyHealth(); }
     clearTimeout(pending.timer);
     pending.reject(new BridgeOperationError(message, pending.id, code, Boolean(diagnostics)));
     pending = undefined;
@@ -73,7 +81,7 @@ export async function createBridge({ port = 3055, timeoutMs = 120000, installati
         clearTimeout(authTimer);
         peer = socket;
         document = message.document;
-        pluginSessionId = typeof message.pluginSessionId === 'string' ? message.pluginSessionId : undefined;
+        pluginSessionId = typeof message.pluginSessionId === 'string' && message.pluginSessionId.length <= 200 ? message.pluginSessionId : undefined;
         log('info', 'plugin_connected', { pluginVersion: document?.pluginVersion });
         socket.send(JSON.stringify({ type: 'ready', serverVersion: VERSION, serverSessionId: operations.sessionId }));
         return;
@@ -91,21 +99,21 @@ export async function createBridge({ port = 3055, timeoutMs = 120000, installati
           const record = operations.lookup(message.id);
           if (record.pluginSessionId === pluginSessionId && ['unknown', 'waiting_result', 'completed', 'failed'].includes(record.status)) {
             if (['unknown', 'waiting_result'].includes(record.status)) operations.finish(message.id, message);
-            socket.send(JSON.stringify({ type: 'result_ack', id: message.id }));
+            if (historyHealth().healthy) socket.send(JSON.stringify({ type: 'result_ack', id: message.id }));
             log('info', 'operation_recovered', { requestId: message.id, command: record.command, outcome: record.status });
           }
-        } catch { /* Previous server sessions cannot be recovered. */ }
+        } catch { /* Missing/expired records or another plugin session must never be guessed. */ }
       }
       if (message.type === 'result' && timedOut && message.id === timedOut.id && timedOut.socket === socket) {
         log(typeof message.error === 'string' ? 'error' : 'warn', 'plugin_late_result', { requestId: timedOut.id, command: timedOut.command, durationMs: Date.now() - timedOut.startedAt, message: typeof message.error === 'string' ? message.error : undefined, outcome: typeof message.error === 'string' ? 'plugin_error' : 'plugin_completed' });
         operations.finish(timedOut.id, message);
-        if (timedOut.record) socket.send(JSON.stringify({ type: 'result_ack', id: message.id }));
+        if (timedOut.record && historyHealth().healthy) socket.send(JSON.stringify({ type: 'result_ack', id: message.id }));
         timedOut = undefined;
       }
       if (message.type === 'result' && pending && message.id === pending.id) {
         const current = pending;
         operations.finish(current.id, message);
-        if (current.record) socket.send(JSON.stringify({ type: 'result_ack', id: message.id }));
+        if (current.record && historyHealth().healthy) socket.send(JSON.stringify({ type: 'result_ack', id: message.id }));
         pending = undefined;
         clearTimeout(current.timer);
         log(typeof message.error === 'string' ? 'error' : 'info', 'operation_result', {
@@ -131,13 +139,17 @@ export async function createBridge({ port = 3055, timeoutMs = 120000, installati
   });
   return {
     getOperation(id) { return operations.view(id); },
+    listOperations(args) { return operations.list(args); },
     info(skillVersion) {
       const operation = pending ? 'running' : timedOut ? 'timed_out_waiting_result' : 'idle';
+      const ready = readiness({ connected: peer?.readyState === WebSocket.OPEN, document, operation, skillVersion });
+      const history = operations.info();
+      if (!history.healthy) { ready.ready = false; ready.issues.push({ code: 'HISTORY_WRITE_FAILED', action: 'Проверьте свободное место и права локального журнала, затем перезапустите MCP. Не повторяйте неопределённые изменения.' }); }
       return { connected: peer?.readyState === WebSocket.OPEN, port: wss.address().port,
         operation,
         serverSessionId: operations.sessionId, nextOperationId: operations.nextId(),
         activeOperation: (pending ?? timedOut) ? { operationId: (pending ?? timedOut).id, command: (pending ?? timedOut).command, elapsedMs: Date.now() - (pending ?? timedOut).startedAt } : null,
-        readiness: readiness({ connected: peer?.readyState === WebSocket.OPEN, document, operation, skillVersion }), pairingMode: 'automatic', document,
+        readiness: ready, history, pairingMode: 'automatic', document,
         instructions: 'Run the plugin imported from generated/figma-plugin/manifest.json. It connects automatically. Keep its window open.' };
     },
     request(command, args, { operationId, write = false } = {}) {
@@ -152,6 +164,7 @@ export async function createBridge({ port = 3055, timeoutMs = 120000, installati
         } catch (error) { return Promise.reject(error); }
       }
       if (!peer || peer.readyState !== WebSocket.OPEN) return Promise.reject(new Error('Figma plugin is not connected. Call get_connection and pair the plugin.'));
+      if (write && !operations.info().healthy) return Promise.reject(new Error('Operation history is unavailable; repair local storage and restart before editing.'));
       if (pending) return Promise.reject(new Error('A Figma operation is running. Wait for its result before the next call.'));
       if (timedOut) return Promise.reject(new Error('The previous Figma operation timed out and may still be running. Wait for the plugin result; if it never arrives, reconnect the plugin before retrying.'));
       return new Promise((resolve, reject) => {

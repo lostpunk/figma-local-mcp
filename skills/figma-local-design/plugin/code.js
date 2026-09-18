@@ -203,7 +203,7 @@
     }
     for (const font of fonts.values()) await figma.loadFontAsync(font);
     const created = [];
-    const restore = [];
+    const restore2 = [];
     let mutated = false;
     try {
       for (const plan of variablePlan.filter((p) => p.changed)) {
@@ -212,7 +212,7 @@
           const previous = variable.valuesByMode[modeId];
           if (previous === void 0) throw new Error(`Default mode has no value for ${plan.name}`);
           const target = variable;
-          restore.push(() => target.setValueForMode(modeId, previous));
+          restore2.push(() => target.setValueForMode(modeId, previous));
         } else {
           variable = figma.variables.createVariable(plan.name, collection, plan.type);
           created.push(variable);
@@ -226,7 +226,7 @@
         if (style) {
           const target = style;
           const previous = { fontName: style.fontName, fontSize: style.fontSize, lineHeight: style.lineHeight };
-          restore.push(() => {
+          restore2.push(() => {
             target.fontName = previous.fontName;
             target.fontSize = previous.fontSize;
             target.lineHeight = previous.lineHeight;
@@ -246,7 +246,7 @@
       return result2;
     } catch (error) {
       let failures = 0;
-      for (const undo of restore.reverse()) {
+      for (const undo of restore2.reverse()) {
         try {
           undo();
         } catch (e) {
@@ -276,7 +276,7 @@
     const previousPage = figma.currentPage;
     const specifiedPage = args.pageId ? await helpers.getNode(args.pageId) : void 0;
     if (specifiedPage && specifiedPage.type !== "PAGE") throw new Error("pageId must identify a page");
-    const { name, colors, typography, spacing, radii } = args;
+    const { name, colors, typography, spacing, radii: radii2 } = args;
     const prefix = `${name}/`;
     const collections = await figma.variables.getLocalVariableCollectionsAsync();
     const existingStyles = await figma.getLocalTextStylesAsync();
@@ -319,7 +319,7 @@
       };
       const colorTokens = colors.map((c) => __spreadProps(__spreadValues({}, c), { variable: createVariable(`color/${c.name}`, rgb2(c.value), "COLOR") }));
       const spacingTokens = spacing.map((s) => __spreadProps(__spreadValues({}, s), { variable: createVariable(`spacing/${s.name}`, s.value, "FLOAT") }));
-      const radiusTokens = radii.map((s) => __spreadProps(__spreadValues({}, s), { variable: createVariable(`radius/${s.name}`, s.value, "FLOAT") }));
+      const radiusTokens = radii2.map((s) => __spreadProps(__spreadValues({}, s), { variable: createVariable(`radius/${s.name}`, s.value, "FLOAT") }));
       for (const spec of typography) {
         const style = figma.createTextStyle();
         styles.push(style);
@@ -847,6 +847,129 @@
     }
   }
 
+  // plugin/design-review.ts
+  async function resolveDesignRules(rules) {
+    var _a, _b, _c;
+    const variables = [], styles = [], components = [];
+    for (const id of (_a = rules.colorVariableIds) != null ? _a : []) {
+      const v = await figma.variables.getVariableByIdAsync(id);
+      if (!v || v.resolvedType !== "COLOR") throw new Error(`Expected a COLOR variable: ${id}`);
+      variables.push(v);
+    }
+    for (const id of (_b = rules.textStyleIds) != null ? _b : []) {
+      const style = await figma.getStyleByIdAsync(id);
+      if (!style || style.type !== "TEXT") throw new Error(`Expected a text style: ${id}`);
+      styles.push(style);
+    }
+    for (const id of (_c = rules.componentIds) != null ? _c : []) {
+      const node = await figma.getNodeByIdAsync(id);
+      if (!node || !["COMPONENT", "COMPONENT_SET"].includes(node.type)) throw new Error(`Expected a component or set: ${id}`);
+      components.push(node);
+    }
+    return { variables, styles, components };
+  }
+  function variableColor(variable, node) {
+    const resolved = variable.resolveForConsumer(node);
+    if (resolved.resolvedType !== "COLOR" || !resolved.value || typeof resolved.value !== "object" || !("r" in resolved.value))
+      throw new Error("Color variable could not be resolved for this layer.");
+    return resolved.value;
+  }
+  function paintMatches(paint3, color) {
+    var _a;
+    return (paint3 == null ? void 0 : paint3.type) === "SOLID" && Math.abs(((_a = paint3.opacity) != null ? _a : 1) - color.a) < 1e-6 && ["r", "g", "b"].every((k) => Math.abs(paint3.color[k] - color[k]) < 1e-6);
+  }
+  var typographyKeys = [
+    "fontName",
+    "fontSize",
+    "lineHeight",
+    "letterSpacing",
+    "paragraphSpacing",
+    "paragraphIndent",
+    "textCase",
+    "textDecoration",
+    "listSpacing",
+    "hangingPunctuation",
+    "hangingList",
+    "leadingTrim",
+    "textWrapStyle"
+  ];
+  function styleMatches(node, style) {
+    return typographyKeys.every((key) => JSON.stringify(node[key]) === JSON.stringify(style[key]));
+  }
+  async function inspectDesignNode(node, rules, resources) {
+    var _a, _b, _c, _d, _e, _f;
+    if ((_a = rules.ignoreNodeIds) == null ? void 0 : _a.includes(node.id)) return [];
+    const findings = [];
+    if (rules.colorVariableIds) for (const field of ["fills", "strokes"]) {
+      const paints = node[field];
+      if (paints === figma.mixed) {
+        findings.push({ code: "MIXED_COLOR_BINDINGS", message: "Mixed text paints require range-level review.", evidence: { field } });
+        continue;
+      }
+      if (!Array.isArray(paints)) continue;
+      for (const [index, paint3] of paints.entries()) {
+        if (paint3.visible === false || paint3.type !== "SOLID") continue;
+        const id = (_c = (_b = paint3.boundVariables) == null ? void 0 : _b.color) == null ? void 0 : _c.id;
+        if (id && rules.colorVariableIds.includes(id)) continue;
+        findings.push({
+          code: id ? "COLOR_VARIABLE_OUTSIDE_SYSTEM" : "UNBOUND_COLOR",
+          message: id ? "Color is bound to a variable outside the supplied project system." : "Solid color has no project variable binding.",
+          evidence: {
+            field,
+            paintIndex: index,
+            variableId: id != null ? id : null,
+            candidateVariableIds: resources.variables.filter((v) => paintMatches(paint3, variableColor(v, node))).map((v) => v.id)
+          }
+        });
+      }
+    }
+    if (node.type === "TEXT" && rules.textStyleIds && !rules.textStyleIds.includes(node.textStyleId)) findings.push({
+      code: "TEXT_STYLE_OUTSIDE_SYSTEM",
+      message: "Text has no approved project style. Candidates match current uniform typography exactly.",
+      evidence: {
+        textStyleId: typeof node.textStyleId === "string" ? node.textStyleId : null,
+        candidateStyleIds: resources.styles.filter((s) => styleMatches(node, s)).map((s) => s.id)
+      }
+    });
+    if (node.type === "INSTANCE" && rules.componentIds) {
+      const main = await node.getMainComponentAsync();
+      if (!main || !rules.componentIds.includes(main.id) && !rules.componentIds.includes((_d = main.parent) == null ? void 0 : _d.id)) findings.push({
+        code: "COMPONENT_OUTSIDE_SYSTEM",
+        message: "Instance source is outside the supplied project component list; inspect its role before replacement.",
+        evidence: { componentId: (_e = main == null ? void 0 : main.id) != null ? _e : null, componentSetId: ((_f = main == null ? void 0 : main.parent) == null ? void 0 : _f.type) === "COMPONENT_SET" ? main.parent.id : null }
+      });
+    }
+    return findings;
+  }
+  async function resolveDesignEdit(node, edit) {
+    if (edit.property === "textStyleId") {
+      const style = await figma.getStyleByIdAsync(edit.resourceId);
+      if (!style || style.type !== "TEXT" || !styleMatches(node, style)) throw new Error("Text style or typography changed. Preview again.");
+      validateStyleEdit(node, edit, style);
+      return style;
+    }
+    const variable = await figma.variables.getVariableByIdAsync(edit.resourceId);
+    if (!variable || variable.resolvedType !== "COLOR") throw new Error("Color variable is unavailable. Preview again.");
+    validateColorEdit(node, edit, variable);
+    return variable;
+  }
+  function validateStyleEdit(node, edit, style) {
+    if (JSON.stringify(typographyKeys.map((key) => style[key])) !== edit.signature || !styleMatches(node, style))
+      throw new Error("Text style or typography changed. Preview again.");
+  }
+  function validateColorEdit(node, edit, variable) {
+    const color = variableColor(variable, node), paints = node[edit.property === "fillVariableId" ? "fills" : "strokes"];
+    if (JSON.stringify(color) !== edit.signature || !Array.isArray(paints) || paints.length !== 1 || !paintMatches(paints[0], color))
+      throw new Error("Color or variable mode changed. Preview again.");
+  }
+  function validateDesignTarget(node, edits) {
+    if (!["RECTANGLE", "ELLIPSE", "FRAME", "TEXT"].includes(node.type)) throw new Error("Binding preview does not support this node type.");
+    for (let current = node; current && current.type !== "DOCUMENT"; current = current.parent)
+      if (current.locked || current.isMask || current.visible === false || current.opacity === 0 || ["COMPONENT", "COMPONENT_SET", "INSTANCE"].includes(current.type)) throw new Error("Hidden, locked, masked or component hierarchies require manual binding review.");
+    if (edits.some((e) => e.property === "textStyleId") && (typeof node.textStyleId !== "string" || typeof node.fontName !== "object"))
+      throw new Error("Mixed typography requires manual review.");
+  }
+
   // plugin/audit.ts
   var bounded = (value) => value.slice(0, 200);
   var finite = (value) => typeof value === "number" && Number.isFinite(value);
@@ -872,8 +995,26 @@
       if (findings.length < maxFindings) findings.push(finding);
     };
     const note = (node, code, message, evidence, severity = "warning") => add({ code, severity, nodeId: node.id, name: bounded(node.name), message, evidence });
-    const check = (node) => {
-      var _a2, _b2, _c2, _d2;
+    let designResources;
+    let designChecked = 0, designIgnored = 0;
+    if (rules.designSystem) {
+      try {
+        designResources = await resolveDesignRules(rules.designSystem);
+      } catch (error) {
+        failedChecks++;
+        add({ code: "DESIGN_RULES_INVALID", severity: "warning", message: error instanceof Error ? error.message : String(error) });
+      }
+    }
+    const check = async (node) => {
+      var _a2, _b2, _c2, _d2, _e2;
+      if (designResources && rules.designSystem && node.type !== "PAGE") {
+        if ((_a2 = rules.designSystem.ignoreNodeIds) == null ? void 0 : _a2.includes(node.id)) designIgnored++;
+        else {
+          for (const finding of await inspectDesignNode(node, rules.designSystem, designResources))
+            note(node, finding.code, finding.message, finding.evidence);
+          designChecked++;
+        }
+      }
       const parent = node.parent;
       if (node !== root && node.type !== "PAGE" && parent && ["FRAME", "COMPONENT", "INSTANCE", "SECTION"].includes(parent.type) && "width" in parent) {
         const box = localBounds(node);
@@ -894,7 +1035,7 @@
           }
         );
       }
-      if ("layoutMode" in node && ["HORIZONTAL", "VERTICAL"].includes(node.layoutMode) && ((_a2 = rules.spacing) == null ? void 0 : _a2.length)) {
+      if ("layoutMode" in node && ["HORIZONTAL", "VERTICAL"].includes(node.layoutMode) && ((_b2 = rules.spacing) == null ? void 0 : _b2.length)) {
         const properties2 = ["paddingTop", "paddingRight", "paddingBottom", "paddingLeft"];
         if (node.primaryAxisAlignItems !== "SPACE_BETWEEN") properties2.push("itemSpacing");
         if (node.layoutWrap === "WRAP" && node.counterAxisAlignContent !== "SPACE_BETWEEN") properties2.push("counterAxisSpacing");
@@ -914,12 +1055,12 @@
             node,
             "TEXT_TRUNCATION_ENABLED",
             "Ellipsis is enabled; verify that shortened text is intentional. This does not prove overflow.",
-            { maxLines: (_b2 = node.maxLines) != null ? _b2 : null },
+            { maxLines: (_c2 = node.maxLines) != null ? _c2 : null },
             "info"
           );
         } else if (node.textAutoResize === "NONE") {
           const rendered = node.absoluteRenderBounds, box = node.absoluteBoundingBox;
-          if (!node.effects.some((effect) => effect.visible !== false) && !node.strokes.some((paint2) => paint2.visible !== false) && rendered && box && (rendered.x < box.x - tolerance || rendered.y < box.y - tolerance || rendered.x + rendered.width > box.x + box.width + tolerance || rendered.y + rendered.height > box.y + box.height + tolerance)) {
+          if (!node.effects.some((effect) => effect.visible !== false) && !node.strokes.some((paint3) => paint3.visible !== false) && rendered && box && (rendered.x < box.x - tolerance || rendered.y < box.y - tolerance || rendered.x + rendered.width > box.x + box.width + tolerance || rendered.y + rendered.height > box.y + box.height + tolerance)) {
             note(
               node,
               "TEXT_RENDER_OUTSIDE_BOX",
@@ -930,7 +1071,7 @@
           }
         }
       }
-      for (const rule of (_c2 = rules.componentStates) != null ? _c2 : []) {
+      for (const rule of (_d2 = rules.componentStates) != null ? _d2 : []) {
         if (rule.nodeId !== node.id) continue;
         seenStateRules.add(rule);
         if (node.type !== "COMPONENT_SET") {
@@ -939,7 +1080,7 @@
           continue;
         }
         const property = node.componentPropertyDefinitions[rule.property];
-        const actual = (property == null ? void 0 : property.type) === "VARIANT" ? (_d2 = property.variantOptions) != null ? _d2 : [] : [];
+        const actual = (property == null ? void 0 : property.type) === "VARIANT" ? (_e2 = property.variantOptions) != null ? _e2 : [] : [];
         const missing = rule.required.filter((value) => !actual.includes(value));
         if (missing.length) note(
           node,
@@ -972,7 +1113,7 @@
         continue;
       }
       try {
-        check(node);
+        await check(node);
         checked++;
       } catch (e) {
         failedChecks++;
@@ -1018,6 +1159,7 @@
         nodesTruncated,
         findingsTruncated: findingCount > maxFindings,
         textStyles: { scope: "local_file", enabled: args.checkTextStyles !== false, checked: stylesChecked, truncated: stylesTruncated },
+        designSystem: { enabled: Boolean(rules.designSystem), checked: designChecked, ignored: designIgnored },
         spacingChecked: Boolean((_h = rules.spacing) == null ? void 0 : _h.length),
         stateRulesChecked: seenStateRules.size,
         uncheckedStateRules,
@@ -1031,6 +1173,709 @@
         "Duplicate checks compare local text-style names only. Variant checks cover supplied property values, not every combination or prototype behavior."
       ]
     };
+  }
+
+  // plugin/layout-preview.ts
+  function layoutDescendants(node) {
+    const descendants = [];
+    function visit(current) {
+      var _a;
+      for (const child of (_a = current.children) != null ? _a : []) {
+        if (descendants.length >= 100) throw new Error("Layout preview supports at most 100 descendants.");
+        descendants.push(child);
+        visit(child);
+      }
+    }
+    visit(node);
+    return descendants;
+  }
+  var layoutProperties = /* @__PURE__ */ new Set(["width", "height", "itemSpacing", "paddingTop", "paddingBottom", "paddingLeft", "paddingRight"]);
+  var isLayoutEdit = (node, props) => node.type === "FRAME" && Object.keys(props).some((key) => layoutProperties.has(key));
+  function predictLayout(node, props) {
+    var _a, _b, _c, _d, _e;
+    if (!["HORIZONTAL", "VERTICAL"].includes(node.layoutMode)) throw new Error("Layout preview requires an existing horizontal or vertical Auto Layout frame.");
+    if (node.primaryAxisSizingMode !== "FIXED" || node.counterAxisSizingMode !== "FIXED" || node.layoutWrap === "WRAP" || node.counterAxisAlignItems === "BASELINE" || ((_a = node.strokes) == null ? void 0 : _a.some((p) => p.visible !== false)) && node.strokesIncludedInLayout)
+      throw new Error("Layout preview requires fixed axes without wrapping, baseline alignment or included strokes.");
+    for (let current = node; current && current.type !== "PAGE"; current = current.parent) {
+      if (current !== node && (current.type === "GROUP" || ["INSTANCE", "COMPONENT", "COMPONENT_SET"].includes(current.type) || current.layoutMode && current.layoutMode !== "NONE"))
+        throw new Error("Layout preview requires a regular ancestor hierarchy.");
+      if (current.locked || current.visible === false || current.opacity === 0 || current.isMask || ((_c = (_b = current.parent) == null ? void 0 : _b.children) == null ? void 0 : _c.some((child) => child.isMask)))
+        throw new Error("Hidden, locked or masked layout requires manual review.");
+      const m = current.relativeTransform;
+      if (!m || m[0][0] !== 1 || m[0][1] !== 0 || m[1][0] !== 0 || m[1][1] !== 1)
+        throw new Error("Transformed layout requires manual review.");
+    }
+    if (["minWidth", "maxWidth", "minHeight", "maxHeight"].some((key) => node[key] != null))
+      throw new Error("Layout min/max constraints require manual review.");
+    const descendants = layoutDescendants(node);
+    const children = node.children.filter((c) => c.visible !== false);
+    for (const child of children) {
+      const m = child.relativeTransform;
+      if (child.layoutPositioning === "ABSOLUTE" || child.layoutGrow || child.layoutAlign === "STRETCH" || child.layoutSizingHorizontal === "FILL" || child.layoutSizingVertical === "FILL" || child.isMask || !m || m[0][0] !== 1 || m[0][1] !== 0 || m[1][0] !== 0 || m[1][1] !== 1)
+        throw new Error("Layout children must have fixed measured sizes, without fill, stretch, absolute placement or transforms.");
+    }
+    const value = (key) => {
+      var _a2;
+      return (_a2 = props[key]) != null ? _a2 : node[key];
+    };
+    const horizontal = node.layoutMode === "HORIZONTAL";
+    const width = value("width"), height = value("height");
+    const main = horizontal ? width : height, cross = horizontal ? height : width;
+    const start = value(horizontal ? "paddingLeft" : "paddingTop"), end = value(horizontal ? "paddingRight" : "paddingBottom");
+    const crossStart = value(horizontal ? "paddingTop" : "paddingLeft"), crossEnd = value(horizontal ? "paddingBottom" : "paddingRight");
+    const sizes2 = children.map((c) => horizontal ? c.width : c.height);
+    const used = sizes2.reduce((sum, n) => sum + n, 0);
+    const align = (_d = node.primaryAxisAlignItems) != null ? _d : "MIN", crossAlign = (_e = node.counterAxisAlignItems) != null ? _e : "MIN";
+    if (!["MIN", "CENTER", "MAX", "SPACE_BETWEEN"].includes(align) || !["MIN", "CENTER", "MAX"].includes(crossAlign))
+      throw new Error("Unsupported layout alignment.");
+    const remaining = main - start - end - used;
+    const gap = align === "SPACE_BETWEEN" && children.length > 1 ? Math.max(0, remaining / (children.length - 1)) : value("itemSpacing");
+    const free = remaining - Math.max(0, children.length - 1) * gap;
+    if (free < -0.01) throw new Error("Proposed layout does not fit its main axis.");
+    let cursor = start + (align === "CENTER" ? free / 2 : align === "MAX" ? free : 0);
+    const effects = children.map((child, index) => {
+      const crossSize = horizontal ? child.height : child.width, crossFree = cross - crossStart - crossEnd - crossSize;
+      if (crossFree < -0.01) throw new Error("Proposed layout does not fit its cross axis.");
+      const other = crossStart + (crossAlign === "CENTER" ? crossFree / 2 : crossAlign === "MAX" ? crossFree : 0);
+      const after = { x: horizontal ? cursor : other, y: horizontal ? other : cursor, width: child.width, height: child.height };
+      cursor += sizes2[index] + gap;
+      return { nodeId: child.id, before: { x: child.x, y: child.y, width: child.width, height: child.height }, after };
+    });
+    if (!Object.values({ width, height, start, end, crossStart, crossEnd, gap }).every(Number.isFinite))
+      throw new Error("Layout geometry is unavailable.");
+    return { nodeId: node.id, frame: { width, height }, children: effects, descendants };
+  }
+
+  // plugin/text-fit.ts
+  function textHeightProposal(node, requested, tolerance = 0.5) {
+    var _a, _b, _c;
+    if (node.type !== "TEXT" || node.textAutoResize !== "NONE" || node.textTruncation === "ENDING")
+      throw new Error("Text fix requires fixed-size text without ellipsis.");
+    if (node.hasMissingFont || typeof node.fontName !== "object" || typeof node.fontSize !== "number" || node.textAlignVertical && node.textAlignVertical !== "TOP")
+      throw new Error("Missing/mixed fonts or vertical text alignment require manual review.");
+    if (node.effects.some((v) => v.visible !== false) || node.strokes.some((v) => v.visible !== false))
+      throw new Error("Text effects or strokes make render bounds ambiguous.");
+    const parent = node.parent;
+    if ((parent == null ? void 0 : parent.type) !== "FRAME" || parent.layoutMode !== "NONE" || parent.overflowDirection && parent.overflowDirection !== "NONE")
+      throw new Error("Text fix requires a regular non-scrolling frame.");
+    for (let current = node; current && current.type !== "PAGE"; current = current.parent) {
+      if (current.visible === false || current.opacity === 0 || current.locked || current.isMask || ["INSTANCE", "COMPONENT", "COMPONENT_SET", "GROUP"].includes(current.type) || current.layoutMode && current.layoutMode !== "NONE" || ((_b = (_a = current.parent) == null ? void 0 : _a.children) == null ? void 0 : _b.some((child) => child.isMask)))
+        throw new Error("Hidden, locked, masked, component or Auto Layout hierarchies require manual review.");
+      const m = current.relativeTransform;
+      if (!m || m[0][0] !== 1 || m[0][1] !== 0 || m[1][0] !== 0 || m[1][1] !== 1)
+        throw new Error("Transformed text or ancestors require manual review.");
+    }
+    if (parent.children.length > 200) throw new Error("Too many siblings for a bounded text fix.");
+    const box = node.absoluteBoundingBox, ink = node.absoluteRenderBounds;
+    if (!box || !ink || ![box.x, box.y, box.width, box.height, ink.x, ink.y, ink.width, ink.height].every(Number.isFinite))
+      throw new Error("Text render bounds are unavailable.");
+    if (ink.x < box.x - tolerance || ink.x + ink.width > box.x + box.width + tolerance || ink.y < box.y - tolerance)
+      throw new Error("Horizontal or top glyph overflow requires manual review.");
+    const minimum = Math.ceil(ink.y + ink.height - box.y);
+    const height = requested != null ? requested : minimum;
+    if (!Number.isFinite(height) || height <= node.height || height < minimum || height > 1e5)
+      throw new Error("Text height must grow to contain the current rendered text.");
+    if (node.x < 0 || node.y < 0 || node.x + node.width > parent.width || node.y + height > parent.height)
+      throw new Error("Text cannot grow within its parent.");
+    const strip = { x: box.x, right: box.x + box.width, y: box.y + node.height, bottom: box.y + height };
+    for (const sibling of parent.children) {
+      if (sibling === node || sibling.visible === false || sibling.opacity === 0) continue;
+      const b = sibling.absoluteBoundingBox;
+      if (!b) throw new Error("A sibling has no bounds; inspect text growth manually.");
+      const r = (_c = sibling.absoluteRenderBounds) != null ? _c : b;
+      const left = Math.min(b.x, r.x), right = Math.max(b.x + b.width, r.x + r.width);
+      const top = Math.min(b.y, r.y), bottom = Math.max(b.y + b.height, r.y + r.height);
+      if (left < strip.right && right > strip.x && top < strip.bottom && bottom > strip.y)
+        throw new Error(`Text growth intersects sibling ${sibling.id}; review spacing manually.`);
+    }
+    return { height };
+  }
+  function textSiblingState(node) {
+    return node.parent.children.map((s) => ({
+      id: s.id,
+      visible: s.visible,
+      opacity: s.opacity,
+      isMask: s.isMask,
+      bounds: s.absoluteBoundingBox,
+      rendered: s.absoluteRenderBounds
+    }));
+  }
+
+  // plugin/changes.ts
+  var TTL = 5 * 60 * 1e3;
+  var plans2 = /* @__PURE__ */ new Map();
+  var session = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+  var sequence = 0;
+  var metadata = /* @__PURE__ */ new Set(["name", "opacity", "visible", "locked"]);
+  var shapeProps = /* @__PURE__ */ new Set([...metadata, "x", "y", "width", "height", "fill", "stroke", "strokeWeight", "cornerRadius"]);
+  var geometry = /* @__PURE__ */ new Set(["x", "y", "width", "height"]);
+  var radii = ["topLeftRadius", "topRightRadius", "bottomLeftRadius", "bottomRightRadius"];
+  var stateKeys = [
+    "name",
+    "x",
+    "y",
+    "width",
+    "height",
+    "rotation",
+    "relativeTransform",
+    "opacity",
+    "visible",
+    "locked",
+    "isMask",
+    "resolvedVariableModes",
+    "fills",
+    "strokes",
+    "strokeWeight",
+    "strokeTopWeight",
+    "strokeBottomWeight",
+    "strokeLeftWeight",
+    "strokeRightWeight",
+    "cornerRadius",
+    ...radii,
+    "cornerSmoothing",
+    "effects",
+    "constraints",
+    "boundVariables",
+    "explicitVariableModes",
+    "fillStyleId",
+    "strokeStyleId",
+    "effectStyleId",
+    ...typographyKeys,
+    "characters",
+    "fontName",
+    "fontSize",
+    "textStyleId",
+    "textAutoResize",
+    "textAlignVertical",
+    "textAlignHorizontal",
+    "lineHeight",
+    "letterSpacing",
+    "paragraphSpacing",
+    "paragraphIndent",
+    "listSpacing",
+    "textCase",
+    "textDecoration",
+    "textTruncation",
+    "maxLines",
+    "hasMissingFont",
+    "absoluteRenderBounds",
+    "layoutMode",
+    "primaryAxisSizingMode",
+    "counterAxisSizingMode",
+    "layoutSizingHorizontal",
+    "layoutSizingVertical",
+    "layoutWrap",
+    "layoutPositioning",
+    "layoutGrow",
+    "layoutAlign",
+    "primaryAxisAlignItems",
+    "counterAxisAlignItems",
+    "strokesIncludedInLayout",
+    "minWidth",
+    "maxWidth",
+    "minHeight",
+    "maxHeight",
+    "itemSpacing",
+    "paddingTop",
+    "paddingBottom",
+    "paddingLeft",
+    "paddingRight"
+  ];
+  var stateFieldIndexes = new Map([.../* @__PURE__ */ new Set(["id", "type", "parentId", ...stateKeys, "childIds"])].map((key, index) => [key, index]));
+  function copy(value) {
+    if (value === void 0) return null;
+    return JSON.parse(JSON.stringify(value, (_key, v) => typeof v === "symbol" ? { mixed: true } : v));
+  }
+  function stable(value) {
+    if (Array.isArray(value)) return `[${value.map(stable).join(",")}]`;
+    if (value && typeof value === "object") return `{${Object.keys(value).sort().map((k) => `${JSON.stringify(k)}:${stable(value[k])}`).join(",")}}`;
+    return JSON.stringify(value);
+  }
+  function state(node) {
+    var _a, _b;
+    const result2 = { id: node.id, type: node.type, parentId: (_b = (_a = node.parent) == null ? void 0 : _a.id) != null ? _b : null };
+    for (const key of stateKeys) if (key in node) result2[key] = copy(node[key]);
+    if ("children" in node) result2.childIds = node.children.map((child) => child.id);
+    return result2;
+  }
+  function compactState(node) {
+    return Object.entries(state(node)).map(([key, value]) => {
+      const index = stateFieldIndexes.get(key);
+      if (index === void 0) throw new Error(`Missing snapshot field: ${key}`);
+      return [index, value];
+    });
+  }
+  function snapshot(node, props = {}, nodeState) {
+    var _a, _b;
+    if (node.removed) throw new Error(`Node removed: ${node.id}. Preview again.`);
+    const ancestors = [];
+    let parent = node.parent;
+    while (parent) {
+      if (ancestors.length >= 64) throw new Error("Layer hierarchy is too deep for a change preview.");
+      const context = { id: parent.id, type: parent.type, parentId: (_b = (_a = parent.parent) == null ? void 0 : _a.id) != null ? _b : null };
+      for (const key of ["x", "y", "width", "height", "relativeTransform", "layoutMode", "visible", "locked", "opacity", "isMask", "overflowDirection", "clipsContent"])
+        if (key in parent) context[key] = copy(parent[key]);
+      if ("children" in parent) context.maskIds = parent.children.filter((child) => child.isMask).map((child) => child.id);
+      ancestors.push(context);
+      parent = parent.parent;
+    }
+    if (!ancestors.some((p) => p.type === "PAGE")) throw new Error("Layer must be attached to a page.");
+    const value = stable({
+      node: nodeState != null ? nodeState : state(node),
+      ancestors,
+      descendants: isLayoutEdit(node, props) ? layoutDescendants(node).map(compactState) : void 0,
+      siblings: node.type === "TEXT" && "height" in props ? textSiblingState(node) : void 0
+    });
+    if (value.length > 32e3) throw new Error("Layer state is too large for a change preview.");
+    return value;
+  }
+  function validatePreviewProperties(node, props) {
+    var _a, _b;
+    if (!["RECTANGLE", "ELLIPSE", "FRAME", "TEXT"].includes(node.type)) throw new Error(`Change previews do not support ${node.type}.`);
+    const shape = node.type === "RECTANGLE" || node.type === "ELLIPSE";
+    if ("strokeWeight" in props && typeof node.strokeWeight !== "number")
+      throw new Error("Preview does not support replacing mixed individual stroke weights.");
+    for (const [key, value] of Object.entries(props)) {
+      if (!(shape ? shapeProps : node.type === "TEXT" ? /* @__PURE__ */ new Set([...metadata, "height"]) : /* @__PURE__ */ new Set([...metadata, ...layoutProperties])).has(key) || key === "cornerRadius" && node.type !== "RECTANGLE")
+        throw new Error(`Preview does not support ${key} on ${node.type}.`);
+      if (key === "name" ? typeof value !== "string" || value.length > 500 : key === "visible" || key === "locked" ? typeof value !== "boolean" : key === "fill" || key === "stroke" ? value !== null && (typeof value !== "string" || !/^#[0-9a-fA-F]{6}$/.test(value)) : typeof value !== "number" || !Number.isFinite(value) || key === "opacity" && (value < 0 || value > 1) || ["width", "height"].includes(key) && (value <= 0 || value > 1e5) || key === "strokeWeight" && (value < 0 || value > 1e3) || key === "cornerRadius" && (value < 0 || value > 1e5) || (key === "itemSpacing" || key.startsWith("padding")) && (value < 0 || value > 1e3) || ["x", "y"].includes(key) && Math.abs(value) > 1e6) throw new Error(`Invalid preview value for ${key}.`);
+    }
+    const layout = isLayoutEdit(node, props);
+    if (layout) predictLayout(node, props);
+    if (node.type === "TEXT" && "height" in props) textHeightProposal(node, props.height);
+    const impactful = Object.keys(props).some((key) => key !== "name" && key !== "locked");
+    const sizingOnly = layout && Object.keys(props).every((k) => layoutProperties.has(k) || ["name", "locked"].includes(k)) || node.type === "TEXT" && "height" in props && Object.keys(props).every((k) => ["height", "name", "locked"].includes(k));
+    if (sizingOnly && Object.keys(props).some((key) => {
+      var _a2;
+      return (_a2 = node.boundVariables) == null ? void 0 : _a2[key];
+    }))
+      throw new Error("Preview cannot replace a bound sizing property. Keep its variable.");
+    if (impactful && !sizingOnly && (Object.keys((_a = node.boundVariables) != null ? _a : {}).length || node.fillStyleId || node.strokeStyleId || node.effectStyleId || [...Array.isArray(node.fills) ? node.fills : [], ...(_b = node.strokes) != null ? _b : []].some((p) => {
+      var _a2;
+      return Object.keys((_a2 = p.boundVariables) != null ? _a2 : {}).length;
+    })))
+      throw new Error("Preview cannot change appearance or geometry of bound/styled layers. Keep their variables and styles.");
+    for (let current = node; current && current.type !== "DOCUMENT"; current = current.parent) {
+      if (["INSTANCE", "COMPONENT", "COMPONENT_SET"].includes(current.type)) throw new Error("Preview does not support component or instance hierarchies.");
+      if (impactful && (current.type === "GROUP" || current.layoutMode && current.layoutMode !== "NONE" && !(layout && current === node)))
+        throw new Error("Preview supports only name/locked inside groups or Auto Layout.");
+    }
+  }
+  function paint(hex) {
+    return hex === null ? [] : [{ type: "SOLID", color: {
+      r: parseInt(hex.slice(1, 3), 16) / 255,
+      g: parseInt(hex.slice(3, 5), 16) / 255,
+      b: parseInt(hex.slice(5, 7), 16) / 255
+    }, opacity: 1, visible: true, blendMode: "NORMAL" }];
+  }
+  function read(node, key) {
+    var _a, _b, _c, _d;
+    if (key === "fillVariableId" || key === "strokeVariableId") return (_d = (_c = (_b = (_a = node[key === "fillVariableId" ? "fills" : "strokes"][0]) == null ? void 0 : _a.boundVariables) == null ? void 0 : _b.color) == null ? void 0 : _c.id) != null ? _d : null;
+    return copy(node[key === "fill" ? "fills" : key === "stroke" ? "strokes" : key]);
+  }
+  function equivalent(a, b) {
+    if (typeof a === "number" && typeof b === "number") return a === b || Math.fround(a) === Math.fround(b);
+    if (Array.isArray(a) && Array.isArray(b)) return a.length === b.length && a.every((v, i) => equivalent(v, b[i]));
+    if (a && b && typeof a === "object" && typeof b === "object") {
+      const normalize = (value) => value.type === "SOLID" ? __spreadValues({ opacity: 1, visible: true, blendMode: "NORMAL", boundVariables: {} }, value) : value;
+      a = normalize(a);
+      b = normalize(b);
+      return Object.keys(a).length === Object.keys(b).length && Object.keys(a).every((k) => k in b && equivalent(a[k], b[k]));
+    }
+    return a === b;
+  }
+  function write(node, props) {
+    var _a, _b;
+    if ("width" in props || "height" in props) node.resize((_a = props.width) != null ? _a : node.width, (_b = props.height) != null ? _b : node.height);
+    for (const [key, value] of Object.entries(props)) {
+      if (key === "width" || key === "height" || key === "locked") continue;
+      node[key === "fill" ? "fills" : key === "stroke" ? "strokes" : key] = value;
+    }
+    if ("locked" in props) node.locked = props.locked;
+  }
+  function restore(node, props, before) {
+    if (Object.keys(props).some((key) => geometry.has(key))) {
+      node.resize(before.width, before.height);
+      node.relativeTransform = before.relativeTransform;
+      node.x = before.x;
+      node.y = before.y;
+    }
+    for (const key of Object.keys(props).reverse()) {
+      if (geometry.has(key)) continue;
+      if (key === "cornerRadius" && typeof before.cornerRadius !== "number") {
+        for (const radius of radii) node[radius] = before[radius];
+      } else node[key === "fill" ? "fills" : key === "stroke" ? "strokes" : key] = before[key === "fill" ? "fills" : key === "stroke" ? "strokes" : key];
+    }
+  }
+  function prune() {
+    for (const [id, plan] of plans2) if (plan.expiresAt <= Date.now()) plans2.delete(id);
+  }
+  async function previewChanges(args, getNode2) {
+    if (!Array.isArray(args.changes) || !args.changes.length || args.changes.length > 50) throw new Error("Provide 1\u201350 layers.");
+    const ids = /* @__PURE__ */ new Set();
+    let count = 0;
+    for (const entry of args.changes) {
+      if (!entry || typeof entry.nodeId !== "string" || ids.has(entry.nodeId) || !entry.props || Array.isArray(entry.props) || typeof entry.props !== "object" || !Object.keys(entry.props).length) throw new Error("Provide unique layers with nonempty properties.");
+      ids.add(entry.nodeId);
+      count += Object.keys(entry.props).length;
+    }
+    if (count > 200) throw new Error("At most 200 properties per preview.");
+    const nodes = [];
+    for (const entry of args.changes) nodes.push(await getNode2(entry.nodeId));
+    return createChangePreview(nodes.map((node, index) => ({ node, props: args.changes[index].props })));
+  }
+  function createChangePreview(entries) {
+    const ids = new Set(entries.map((entry) => entry.node.id));
+    if (!entries.length || entries.length > 50 || ids.size !== entries.length || entries.reduce((count, entry) => count + Object.keys(entry.props).length, 0) > 200)
+      throw new Error("Preview requires 1\u201350 unique layers and at most 200 properties.");
+    const targets = [];
+    let changeNumber = 0;
+    for (const { node, props, design } of entries) {
+      if (design) validateDesignTarget(node, design);
+      else validatePreviewProperties(node, props);
+      for (let parent = node.parent; parent; parent = parent.parent)
+        if (ids.has(parent.id)) throw new Error("Preview parent and descendant layers in separate plans.");
+      const changes = [];
+      for (const [property, value] of Object.entries(props)) {
+        const before = read(node, property);
+        const after = property === "fill" || property === "stroke" ? paint(value) : value;
+        if (!equivalent(before, after)) changes.push({ id: `c${++changeNumber}`, nodeId: node.id, property, before, after });
+      }
+      const effectiveProps = Object.fromEntries(changes.map((change) => [change.property, change.after]));
+      const prediction = isLayoutEdit(node, effectiveProps) ? predictLayout(node, effectiveProps) : null;
+      const layout = prediction ? { nodeId: node.id, frame: prediction.frame, children: prediction.children } : void 0;
+      targets.push({ nodeId: node.id, snapshot: snapshot(node, effectiveProps), changes, layout, design });
+    }
+    if (stable(targets).length > 256e3) throw new Error("Preview state is too large; use fewer layers.");
+    prune();
+    while (plans2.size >= 10) plans2.delete(plans2.keys().next().value);
+    const planId = `${session}-${++sequence}`;
+    const expiresAt = Date.now() + TTL;
+    plans2.set(planId, { expiresAt, targets });
+    return {
+      planId,
+      expiresAt,
+      singleUse: true,
+      previewType: "properties",
+      changes: targets.flatMap((target) => target.changes),
+      layoutEffects: targets.filter((t) => t.layout).map((t) => t.layout),
+      atomicNodeIds: targets.filter((t) => t.layout).map((t) => t.nodeId)
+    };
+  }
+  async function applyChanges(args, getNode2) {
+    var _a;
+    prune();
+    const plan = plans2.get(args.planId);
+    if (!plan) throw new Error("Unknown, expired or consumed plan. Preview again in this plugin session.");
+    if (!Array.isArray(args.changeIds) || !args.changeIds.length || args.changeIds.length > 200 || new Set(args.changeIds).size !== args.changeIds.length) throw new Error("Select 1\u2013200 unique change IDs.");
+    const selection = new Set(args.changeIds);
+    const allChanges = plan.targets.flatMap((target) => target.changes);
+    if (args.changeIds.some((id) => !allChanges.some((change) => change.id === id))) throw new Error("Unknown change ID. Use IDs from this plan.");
+    const pending = [];
+    for (const target of plan.targets) {
+      const chosen = target.changes.filter((change) => selection.has(change.id));
+      if (chosen.length && target.layout && chosen.length !== target.changes.length)
+        throw new Error("Select all changes for a layout frame, or preview the smaller property set again.");
+      if (chosen.length) pending.push({
+        node: await getNode2(target.nodeId),
+        target,
+        props: Object.fromEntries(chosen.map((change) => [change.property, change.after])),
+        before: {}
+      });
+    }
+    for (const item of pending) if (item.target.design) {
+      item.resources = [];
+      for (const edit of item.target.design) {
+        const resource = await resolveDesignEdit(item.node, edit);
+        item.resources.push(resource);
+        if (edit.property === "textStyleId") await figma.loadFontAsync(resource.fontName);
+      }
+    }
+    for (const item of pending) if (item.node.type === "TEXT" && "height" in item.props) {
+      const fonts = item.node.characters.length ? item.node.getRangeAllFontNames(0, item.node.characters.length) : [item.node.fontName];
+      for (const font of fonts) await figma.loadFontAsync(font);
+    }
+    if (plan.expiresAt <= Date.now()) {
+      plans2.delete(args.planId);
+      throw new Error("Plan expired during lookup. Preview again.");
+    }
+    for (const item of pending) {
+      if (snapshot(item.node, Object.fromEntries(item.target.changes.map((c) => [c.property, c.after]))) !== item.target.snapshot) throw new Error(`Layer ${item.target.nodeId} or its context changed. Preview again; no changes applied.`);
+      if (item.target.design) for (const [index, edit] of item.target.design.entries())
+        if (edit.property !== "textStyleId") validateColorEdit(item.node, edit, item.resources[index]);
+        else validateStyleEdit(item.node, edit, item.resources[index]);
+      item.before = state(item.node);
+    }
+    plans2.delete(args.planId);
+    figma.commitUndo();
+    const touched = [];
+    try {
+      for (const item of pending) {
+        const contextProps = Object.fromEntries(item.target.changes.map((c) => [c.property, c.after]));
+        if (item.target.design && snapshot(item.node, contextProps) !== item.target.snapshot) throw new Error("Layer changed during application; remaining layers were not written.");
+        touched.push(item);
+        if (item.target.design) {
+          for (const [index, edit] of item.target.design.entries()) {
+            if (!(edit.property in item.props)) continue;
+            if (edit.property === "textStyleId") validateStyleEdit(item.node, edit, item.resources[index]);
+            else validateColorEdit(item.node, edit, item.resources[index]);
+            const before = state(item.node), beforeSnapshot = snapshot(item.node, contextProps);
+            const field = edit.property === "textStyleId" ? "textStyleId" : edit.property === "fillVariableId" ? "fills" : "strokes";
+            const expected = edit.property === "textStyleId" ? edit.resourceId : [figma.variables.setBoundVariableForPaint(item.node[field][0], "color", item.resources[index])];
+            item.designStable = false;
+            item.afterSnapshot = void 0;
+            if (edit.property === "textStyleId") await item.node.setTextStyleIdAsync(edit.resourceId);
+            else item.node[field] = expected;
+            const changedKeys = /* @__PURE__ */ new Set(["boundVariables", "resolvedVariableModes", field]);
+            const after = state(item.node);
+            if (!Object.keys(before).every((key) => changedKeys.has(key) || stable(before[key]) === stable(after[key])) || snapshot(item.node, contextProps, before) !== beforeSnapshot)
+              throw new Error("Binding changed other layer properties or context. Inspect the layer before continuing.");
+            if (!equivalent(after[field], expected)) throw new Error(`Figma did not retain planned ${edit.property} on ${item.node.id}.`);
+            item.afterSnapshot = snapshot(item.node, contextProps);
+            item.designStable = true;
+          }
+        } else write(item.node, item.props);
+      }
+      for (const item of pending) if (item.target.design) {
+        if (snapshot(item.node, item.props) !== item.afterSnapshot) throw new Error("Layer changed while applying another binding. Inspect affected layers.");
+        for (const [index, edit] of item.target.design.entries()) if (edit.property in item.props) {
+          if (edit.property === "textStyleId") validateStyleEdit(item.node, edit, item.resources[index]);
+          else validateColorEdit(item.node, edit, item.resources[index]);
+        }
+      }
+      for (const item of pending) for (const [key, expected] of Object.entries(item.props))
+        if (!equivalent(read(item.node, key), expected)) throw new Error(`Figma did not retain planned ${key} on ${item.node.id}.`);
+      for (const item of pending) if (item.target.layout) {
+        const children = new Map(item.node.children.map((n) => [n.id, n]));
+        for (const effect of item.target.layout.children) for (const [key, expected] of Object.entries(effect.after))
+          if (!equivalent((_a = children.get(effect.nodeId)) == null ? void 0 : _a[key], expected))
+            throw new Error(`Figma layout differs from the preview on ${effect.nodeId}.`);
+      }
+      for (const item of pending) for (const key of ["x", "y", "width", "height", "rotation"])
+        if (!(key in item.props) && !equivalent(item.node[key], item.before[key]))
+          throw new Error(`Figma changed unselected ${key} on ${item.node.id}.`);
+    } catch (error) {
+      let restored = true;
+      for (const item of touched.reverse()) {
+        try {
+          if (item.target.design) {
+            const contextProps = Object.fromEntries(item.target.changes.map((c) => [c.property, c.after]));
+            if (!item.designStable || !item.afterSnapshot || snapshot(item.node, contextProps) !== item.afterSnapshot) {
+              restored = false;
+              continue;
+            }
+            for (const edit of item.target.design) if (edit.property in item.props) {
+              if (edit.property === "textStyleId") await item.node.setTextStyleIdAsync(item.before.textStyleId);
+              else {
+                const field = edit.property === "fillVariableId" ? "fills" : "strokes";
+                item.node[field] = item.before[field];
+              }
+            }
+          } else restore(item.node, item.props, item.before);
+        } catch (e) {
+          restored = false;
+        }
+      }
+      for (const item of touched) {
+        try {
+          if (snapshot(item.node, Object.fromEntries(item.target.changes.map((c) => [c.property, c.after]))) !== item.target.snapshot) restored = false;
+        } catch (e) {
+          restored = false;
+        }
+      }
+      figma.commitUndo();
+      throw new Error(`${error instanceof Error ? error.message : String(error)} ${restored ? "Original layer states restored." : "Rollback incomplete. Inspect affected layers and use Figma Undo if needed."} Plan consumed; preview again.`);
+    }
+    figma.commitUndo();
+    return { planId: args.planId, appliedChangeIds: args.changeIds, nodeIds: pending.map((item) => item.node.id), layoutEffects: pending.filter((item) => item.target.layout).map((item) => item.target.layout), consumed: true };
+  }
+
+  // plugin/design-fixes.ts
+  async function previewDesignFixes(args, getNode2) {
+    var _a, _b, _c, _d;
+    if (!Array.isArray(args.nodeIds) || !args.nodeIds.length || args.nodeIds.length > 50 || new Set(args.nodeIds).size !== args.nodeIds.length)
+      throw new Error("Select 1\u201350 unique layers.");
+    const root = await getNode2(args.nodeId), resources = await resolveDesignRules(args.rules);
+    const resolved = [], skipped = [];
+    for (const id of args.nodeIds) {
+      try {
+        resolved.push(await getNode2(id));
+      } catch (e) {
+        skipped.push({ nodeId: id, reason: "Layer is unavailable." });
+      }
+    }
+    const entries = [];
+    for (const node of resolved) {
+      try {
+        let inScope = node === root;
+        for (let parent = node.parent; parent; parent = parent.parent) if (parent === root) inScope = true;
+        if (!inScope || ((_a = args.rules.ignoreNodeIds) == null ? void 0 : _a.includes(node.id))) throw new Error("Layer is outside scope or explicitly exempt.");
+        const props = {}, design = [];
+        for (const [field, property] of [["fills", "fillVariableId"], ["strokes", "strokeVariableId"]]) {
+          const paints = node[field];
+          if (!args.rules.colorVariableIds || !Array.isArray(paints) || paints.length !== 1 || paints[0].type !== "SOLID" || paints[0].visible === false || args.rules.colorVariableIds.includes((_c = (_b = paints[0].boundVariables) == null ? void 0 : _b.color) == null ? void 0 : _c.id) || node[field === "fills" ? "fillStyleId" : "strokeStyleId"]) continue;
+          const candidates = resources.variables.filter((v2) => paintMatches(paints[0], variableColor(v2, node)));
+          if (candidates.length !== 1) continue;
+          const v = candidates[0];
+          props[property] = v.id;
+          design.push({ property, resourceId: v.id, signature: JSON.stringify(variableColor(v, node)) });
+        }
+        if (node.type === "TEXT" && args.rules.textStyleIds && !args.rules.textStyleIds.includes(node.textStyleId)) {
+          const candidates = resources.styles.filter((s) => styleMatches(node, s));
+          if (candidates.length === 1 && !node.hasMissingFont && !Object.keys((_d = node.boundVariables) != null ? _d : {}).length) {
+            const style = candidates[0];
+            props.textStyleId = style.id;
+            design.push({ property: "textStyleId", resourceId: style.id, signature: JSON.stringify(typographyKeys.map((k) => style[k])) });
+          }
+        }
+        if (!design.length) throw new Error("No unique exact match. Select the semantic token/style explicitly; component swaps and mixed paints require manual review.");
+        entries.push({ node, props, design });
+      } catch (error) {
+        skipped.push({ nodeId: node.id, reason: error instanceof Error ? error.message : String(error) });
+      }
+    }
+    const accepted = [];
+    for (const entry of entries) {
+      try {
+        validateDesignTarget(entry.node, entry.design);
+        accepted.push(entry);
+      } catch (error) {
+        skipped.push({ nodeId: entry.node.id, reason: error instanceof Error ? error.message : String(error) });
+      }
+    }
+    const plan = accepted.length ? createChangePreview(accepted) : null;
+    return {
+      rootId: root.id,
+      readOnly: true,
+      plan,
+      skipped,
+      nextStep: "Choose semantic bindings, apply selected changes, rerun the audit with the same rules and inspect an export."
+    };
+  }
+
+  // plugin/audit-fixes.ts
+  async function previewAuditFixes(args, getNode2) {
+    var _a, _b, _c;
+    if (!Array.isArray(args.nodeIds) || !args.nodeIds.length || args.nodeIds.length > 50 || new Set(args.nodeIds).size !== args.nodeIds.length) throw new Error("Select 1\u201350 unique finding node IDs.");
+    const tolerance = (_a = args.tolerance) != null ? _a : 0.5;
+    if (!Number.isFinite(tolerance) || tolerance < 0 || tolerance > 10) throw new Error("Invalid audit tolerance.");
+    const root = await getNode2(args.nodeId);
+    const candidates = [];
+    const skipped = [];
+    const resolved = [];
+    for (const id of args.nodeIds) {
+      try {
+        resolved.push(await getNode2(id));
+      } catch (e) {
+        skipped.push({ nodeId: id, reason: "Layer is unavailable; rerun the audit." });
+      }
+    }
+    if (root.removed) throw new Error("Audit root was removed.");
+    for (const node of resolved) {
+      try {
+        if (node.removed || node === root) throw new Error("Select a descendant from the audited subtree.");
+        let inScope = false;
+        for (let current = node.parent; current; current = current.parent) if (current === root) inScope = true;
+        if (!inScope) throw new Error("Layer is outside the audited subtree.");
+        for (let current = node; current; current = current.parent) {
+          if (current.visible === false || current.opacity === 0 || current.locked || current.isMask)
+            throw new Error("Hidden, locked or masked hierarchies require manual review.");
+          if ((_c = (_b = current.parent) == null ? void 0 : _b.children) == null ? void 0 : _c.some((child) => child.isMask))
+            throw new Error("A mask in the ancestor hierarchy makes the visible result ambiguous.");
+        }
+        if (node.type === "TEXT") {
+          const props2 = textHeightProposal(node, void 0, tolerance);
+          validatePreviewProperties(node, props2);
+          candidates.push({ node, props: props2 });
+          continue;
+        }
+        if (!["RECTANGLE", "ELLIPSE"].includes(node.type)) throw new Error("Only simple rectangles and ellipses have a bounds fix.");
+        const parent = node.parent;
+        if ((parent == null ? void 0 : parent.type) !== "FRAME" || parent.layoutMode !== "NONE") throw new Error("Fix requires a regular frame without Auto Layout.");
+        if (parent.overflowDirection && parent.overflowDirection !== "NONE") throw new Error("Scrolling frames require manual review.");
+        const matrix = node.relativeTransform;
+        if (matrix[0][0] !== 1 || matrix[0][1] !== 0 || matrix[1][0] !== 0 || matrix[1][1] !== 1)
+          throw new Error("Rotated, flipped or transformed layers require manual review.");
+        const { x, y, width, height } = node;
+        if (![x, y, width, height, parent.width, parent.height].every(Number.isFinite) || width <= 0 || height <= 0 || width > parent.width || height > parent.height)
+          throw new Error("Layer cannot fit without resizing; no automatic fix proposed.");
+        const props = {};
+        if (x < -tolerance || x + width > parent.width + tolerance) props.x = Math.min(Math.max(x, 0), parent.width - width);
+        if (y < -tolerance || y + height > parent.height + tolerance) props.y = Math.min(Math.max(y, 0), parent.height - height);
+        if (!Object.keys(props).length) throw new Error("No current OUTSIDE_PARENT finding on this layer.");
+        validatePreviewProperties(node, props);
+        candidates.push({ node, props });
+      } catch (error) {
+        skipped.push({ nodeId: node.id, reason: error instanceof Error ? error.message : String(error) });
+      }
+    }
+    const plan = candidates.length ? createChangePreview(candidates) : null;
+    return {
+      readOnly: true,
+      rootId: root.id,
+      rules: ["OUTSIDE_PARENT", "TEXT_RENDER_OUTSIDE_BOX"],
+      plan,
+      skipped,
+      recommendations: candidates.map(({ node }) => ({ nodeId: node.id, reason: node.type === "TEXT" ? "Grow the fixed text box to contain its existing ink without changing width or typography. Inspect the export." : "Move the entire shape inside its parent without resizing. Check that the overflow is not intentional decoration." })),
+      nextStep: "Review differences and select change IDs for apply_changes. Then rerun audit_design on the same root and visually inspect it."
+    };
+  }
+
+  // plugin/presentation.ts
+  var preferenceKey = "figma-local-presentation-v1";
+  var sizes = { compact: { width: 300, height: 64 }, expanded: { width: 380, height: 640 } };
+  var initialWindowSize = sizes.compact;
+  function createPresentation() {
+    let compact = true, revision = 0, initialized = false;
+    let saves = Promise.resolve();
+    const report = (error) => figma.ui.postMessage({ type: "presentation-error", error });
+    function apply(value) {
+      const size = value ? sizes.compact : sizes.expanded;
+      try {
+        figma.ui.resize(size.width, size.height);
+      } catch (e) {
+        figma.ui.postMessage({ type: "presentation-state", compact });
+        report("\u041D\u0435 \u0443\u0434\u0430\u043B\u043E\u0441\u044C \u0438\u0437\u043C\u0435\u043D\u0438\u0442\u044C \u0440\u0430\u0437\u043C\u0435\u0440 \u043E\u043A\u043D\u0430. \u041F\u043E\u043F\u0440\u043E\u0431\u0443\u0439\u0442\u0435 \u0435\u0449\u0451 \u0440\u0430\u0437; \u0441\u043E\u0435\u0434\u0438\u043D\u0435\u043D\u0438\u0435 \u043F\u0440\u043E\u0434\u043E\u043B\u0436\u0430\u0435\u0442 \u0440\u0430\u0431\u043E\u0442\u0430\u0442\u044C.");
+        return false;
+      }
+      compact = value;
+      figma.ui.postMessage({ type: "presentation-state", compact });
+      return true;
+    }
+    async function initialize() {
+      if (initialized) return;
+      initialized = true;
+      const started = revision;
+      try {
+        const saved = await figma.clientStorage.getAsync(preferenceKey);
+        if (revision !== started) return;
+        apply((saved == null ? void 0 : saved.version) === 1 && typeof saved.compact === "boolean" ? saved.compact : compact);
+      } catch (e) {
+        report("\u041D\u0435 \u0443\u0434\u0430\u043B\u043E\u0441\u044C \u043F\u0440\u043E\u0447\u0438\u0442\u0430\u0442\u044C \u043D\u0430\u0441\u0442\u0440\u043E\u0439\u043A\u0438 \u043E\u043A\u043D\u0430. \u0412\u044B\u0431\u0440\u0430\u043D\u043D\u044B\u0439 \u0440\u0435\u0436\u0438\u043C \u0434\u043E\u0441\u0442\u0443\u043F\u0435\u043D \u0432 \u044D\u0442\u043E\u043C \u0437\u0430\u043F\u0443\u0441\u043A\u0435.");
+      }
+    }
+    function setMode(value) {
+      if (typeof value !== "boolean") return;
+      revision++;
+      if (!apply(value)) return;
+      const preference = { version: 1, compact };
+      saves = saves.then(() => figma.clientStorage.setAsync(preferenceKey, preference)).catch(() => report("\u041D\u0435 \u0443\u0434\u0430\u043B\u043E\u0441\u044C \u0437\u0430\u043F\u043E\u043C\u043D\u0438\u0442\u044C \u0440\u0435\u0436\u0438\u043C \u043E\u043A\u043D\u0430. \u0421\u043E\u0435\u0434\u0438\u043D\u0435\u043D\u0438\u0435 \u043F\u0440\u043E\u0434\u043E\u043B\u0436\u0430\u0435\u0442 \u0440\u0430\u0431\u043E\u0442\u0430\u0442\u044C."));
+    }
+    function move(edge) {
+      if (edge !== "left" && edge !== "right") return;
+      try {
+        const { bounds, zoom } = figma.viewport;
+        if (![bounds.x, bounds.y, bounds.width, bounds.height, zoom].every(Number.isFinite) || zoom <= 0)
+          throw new Error("Unavailable viewport");
+        const size = compact ? sizes.compact : sizes.expanded;
+        const inset = 12 / zoom;
+        const x = edge === "left" ? bounds.x + inset : Math.max(bounds.x + inset, bounds.x + bounds.width - size.width / zoom - inset);
+        figma.ui.reposition(x, bounds.y + inset);
+      } catch (e) {
+        report("\u041D\u0435 \u0443\u0434\u0430\u043B\u043E\u0441\u044C \u043F\u0435\u0440\u0435\u043C\u0435\u0441\u0442\u0438\u0442\u044C \u043E\u043A\u043D\u043E. \u041F\u0435\u0440\u0435\u0442\u0430\u0449\u0438\u0442\u0435 \u0435\u0433\u043E \u0437\u0430 \u0437\u0430\u0433\u043E\u043B\u043E\u0432\u043E\u043A.");
+      }
+    }
+    return { initialize, setMode, move };
   }
 
   // plugin/code.ts
@@ -1173,7 +2018,7 @@
     "strokeVariableId",
     "variableBindings"
   ]);
-  function paint(hex) {
+  function paint2(hex) {
     if (hex === null) return [];
     if (!/^#[0-9a-fA-F]{6}$/.test(hex)) throw new Error("Color must be #RRGGBB");
     return [{ type: "SOLID", color: {
@@ -1230,8 +2075,8 @@
       bindings.push({ field, variable });
     }
     const paints = {};
-    if (props.fill !== void 0) paint(props.fill);
-    if (props.stroke !== void 0) paint(props.stroke);
+    if (props.fill !== void 0) paint2(props.fill);
+    if (props.stroke !== void 0) paint2(props.stroke);
     if ((props.width !== void 0 || props.height !== void 0) && !("resize" in node)) throw new Error(`Resize is not supported on ${node.type}`);
     for (const [key, field, raw] of [["fillVariableId", "fills", "fill"], ["strokeVariableId", "strokes", "stroke"]]) {
       if (!props[key]) continue;
@@ -1262,8 +2107,8 @@
     if (props.layoutMode !== void 0) target.layoutMode = props.layoutMode;
     for (const [key, value] of Object.entries(props)) {
       if (["width", "height", "fontName", "layoutMode", "x", "y", "locked", ...special].includes(key)) continue;
-      if (key === "fill") target.fills = paint(value);
-      else if (key === "stroke") target.strokes = paint(value);
+      if (key === "fill") target.fills = paint2(value);
+      else if (key === "stroke") target.strokes = paint2(value);
       else target[key] = value;
     }
     if (props.width !== void 0 || props.height !== void 0) {
@@ -1306,6 +2151,14 @@
     if (designCommands.has(command)) return executeDesignCommand(command, args, { getNode, applyProps, createNode });
     const budget = { left: (_a = args.maxNodes) != null ? _a : 200 };
     switch (command) {
+      case "preview_design_fixes":
+        return previewDesignFixes(args, getNode);
+      case "preview_changes":
+        return previewChanges(args, getNode);
+      case "preview_audit_fixes":
+        return previewAuditFixes(args, getNode);
+      case "apply_changes":
+        return applyChanges(args, getNode);
       case "audit_design":
         return auditDesign(await getNode(args.nodeId), args);
       case "get_document":
@@ -1367,7 +2220,7 @@
         const target = node;
         const rollbackFields = ["name", "x", "y", "width", "height", "rotation", "opacity", "visible", "locked", "fill", "stroke", "strokeWeight", "cornerRadius"];
         const canRestore = ["RECTANGLE", "ELLIPSE"].includes(node.type) && Object.keys(args.props).every((k) => rollbackFields.includes(k)) && !Object.keys((_b = target.boundVariables) != null ? _b : {}).length && !target.fillStyleId && !target.strokeStyleId && !(((_c = node.parent) == null ? void 0 : _c.layoutMode) && node.parent.layoutMode !== "NONE");
-        const snapshot = canRestore ? {
+        const snapshot2 = canRestore ? {
           name: node.name,
           x: node.x,
           y: node.y,
@@ -1389,10 +2242,10 @@
           });
         } catch (error) {
           if (!mutationStarted) throw new Error(`${error instanceof Error ? error.message : String(error)}. No properties changed.`);
-          if (snapshot) {
+          if (snapshot2) {
             try {
-              target.resize(snapshot.width, snapshot.height);
-              for (const [key, value] of Object.entries(snapshot)) if (!["width", "height"].includes(key) && value !== void 0) target[key] = value;
+              target.resize(snapshot2.width, snapshot2.height);
+              for (const [key, value] of Object.entries(snapshot2)) if (!["width", "height"].includes(key) && value !== void 0) target[key] = value;
             } catch (e) {
               figma.commitUndo();
               throw new Error("Update failed and rollback was incomplete. Inspect the node or use Figma Undo.");
@@ -1409,7 +2262,7 @@
         const page = await getNode(args.pageId);
         if (page.type !== "PAGE") throw new Error("pageId must identify a page");
         if (args.name !== void 0) page.name = args.name;
-        if (args.background !== void 0) page.backgrounds = paint(args.background);
+        if (args.background !== void 0) page.backgrounds = paint2(args.background);
         figma.commitUndo();
         return { id: page.id, name: page.name, backgrounds: clean(page.backgrounds) };
       }
@@ -1519,19 +2372,21 @@
         throw new Error(`Unknown command: ${command}`);
     }
   }
-  figma.showUI(__html__, { width: 380, height: 480, themeColors: true });
+  figma.showUI(__html__, __spreadProps(__spreadValues({}, initialWindowSize), { themeColors: true }));
+  var presentation = createPresentation();
   var busy = false;
   function publishDocument() {
     figma.ui.postMessage({ type: "document", document: {
       name: figma.root.name,
       page: figma.currentPage.name,
-      pluginVersion: "0.7.18",
+      pluginVersion: "0.7.24",
       capabilities: getCapabilities()
     } });
   }
   figma.on("currentpagechange", publishDocument);
+  var findingTargets = /* @__PURE__ */ new Set();
   figma.ui.onmessage = async (message) => {
-    var _a;
+    var _a, _b, _c;
     if ((message == null ? void 0 : message.type) === "decode-image-result" && typeof message.id === "string") {
       const pending = imageDecodeRequests.get(message.id);
       if (!pending) return;
@@ -1544,6 +2399,39 @@
     }
     if ((message == null ? void 0 : message.type) === "init") {
       publishDocument();
+      await presentation.initialize();
+      return;
+    }
+    if ((message == null ? void 0 : message.type) === "presentation-mode") {
+      presentation.setMode(message.compact);
+      return;
+    }
+    if ((message == null ? void 0 : message.type) === "presentation-move") {
+      presentation.move(message.edge);
+      return;
+    }
+    if ((message == null ? void 0 : message.type) === "focus-finding") {
+      if (busy) {
+        figma.ui.postMessage({ type: "focus-result", error: "\u0414\u043E\u0436\u0434\u0438\u0442\u0435\u0441\u044C \u0437\u0430\u0432\u0435\u0440\u0448\u0435\u043D\u0438\u044F \u043E\u043F\u0435\u0440\u0430\u0446\u0438\u0438." });
+        return;
+      }
+      if (!findingTargets.has(message.nodeId)) {
+        figma.ui.postMessage({ type: "focus-result", error: "\u041F\u043E\u0432\u0442\u043E\u0440\u0438\u0442\u0435 \u0430\u0443\u0434\u0438\u0442: \u0441\u043B\u043E\u044F \u043D\u0435\u0442 \u0432 \u043F\u043E\u0441\u043B\u0435\u0434\u043D\u0435\u043C \u043E\u0442\u0447\u0451\u0442\u0435." });
+        return;
+      }
+      busy = true;
+      try {
+        const node = await getNode(message.nodeId);
+        const page = pageOf2(node);
+        await figma.setCurrentPageAsync(page);
+        if (node.type !== "PAGE") page.selection = [requireScene(node)];
+        figma.viewport.scrollAndZoomIntoView([node]);
+        figma.ui.postMessage({ type: "focus-result" });
+      } catch (e) {
+        figma.ui.postMessage({ type: "focus-result", error: "\u0421\u043B\u043E\u0439 \u043D\u0435\u0434\u043E\u0441\u0442\u0443\u043F\u0435\u043D. \u041F\u043E\u0432\u0442\u043E\u0440\u0438\u0442\u0435 \u0430\u0443\u0434\u0438\u0442." });
+      } finally {
+        busy = false;
+      }
       return;
     }
     if ((message == null ? void 0 : message.type) === "set-plan") {
@@ -1567,6 +2455,11 @@
     busy = true;
     try {
       const result2 = await execute(message.command, (_a = message.args) != null ? _a : {});
+      if (["audit_design", "preview_audit_fixes", "preview_design_fixes"].includes(message.command)) {
+        findingTargets.clear();
+        for (const finding of ((_c = (_b = result2.findings) != null ? _b : result2.skipped) != null ? _c : []).slice(0, 500))
+          if (typeof finding.nodeId === "string") findingTargets.add(finding.nodeId);
+      }
       figma.ui.postMessage({ type: "result", id: message.id, result: result2 });
     } catch (error) {
       figma.ui.postMessage({ type: "result", id: message.id, error: error instanceof Error ? error.message : String(error) });

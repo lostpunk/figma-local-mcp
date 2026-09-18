@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { cp, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
@@ -15,6 +15,8 @@ test('portable archives exclude local SkillStore metadata', async t => {
   const root = join(directory, 'figma-local-mcp');
   await cp(source, root, { recursive: true, filter: path => !ignoredDirectories.has(basename(path)) });
   await writeFile(join(root, 'skills/figma-local-design/.skillstore-meta.json'), '{"local":true}\n');
+  await mkdir(join(root, 'generated/operation-history'), { recursive: true });
+  await writeFile(join(root, 'generated/operation-history/port-3055.enc'), 'private-history-sentinel');
 
   const packaged = spawnSync('python3', [join(root, 'scripts/package.py')], { cwd: root, encoding: 'utf8' });
   assert.equal(packaged.status, 0, packaged.stderr);
@@ -29,6 +31,7 @@ test('portable archives exclude local SkillStore metadata', async t => {
   assert.ok(entries.includes('figma-local-mcp/skills/figma-local-design/scripts/setup.mjs'));
   assert.ok(!entries.some(entry => entry.endsWith('/runtime-payload.json.gz') || entry.endsWith('/runtime-release.json')));
   assert.ok(!entries.some(entry => entry.endsWith('/.skillstore-meta.json') || entry.endsWith('/installation.json')));
+  assert.ok(!entries.some(entry => entry.includes('/generated/') || entry.endsWith('.enc')));
   assert.ok(entries.includes('figma-local-mcp/skills/figma-local-design/assets/distribution.json'));
   assert.ok(entries.includes('figma-local-mcp/skills/figma-local-design/references/gravity-ui.md'));
   const first = await readFile(archive);

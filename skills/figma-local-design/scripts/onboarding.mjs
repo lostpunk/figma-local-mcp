@@ -4056,6 +4056,42 @@ import { createInterface } from "node:readline/promises";
 import { readFile, realpath, stat } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 
+// src/audit-schema.mjs
+var label = external_exports.string().min(1).max(200);
+var designRulesSchema = external_exports.object({
+  colorVariableIds: external_exports.array(label).min(1).max(100).optional(),
+  textStyleIds: external_exports.array(label).min(1).max(100).optional(),
+  componentIds: external_exports.array(label).min(1).max(100).optional(),
+  ignoreNodeIds: external_exports.array(label).max(100).optional()
+}).strict();
+var designFixesSchema = {
+  nodeId: label,
+  nodeIds: external_exports.array(label).min(1).max(50).refine((ids) => new Set(ids).size === ids.length, "Select unique IDs"),
+  rules: designRulesSchema
+};
+var auditFixesSchema = {
+  nodeId: label.describe("Root of the audited subtree."),
+  nodeIds: external_exports.array(label).min(1).max(50).refine((ids) => new Set(ids).size === ids.length, "Select unique finding node IDs"),
+  tolerance: external_exports.number().finite().min(0).max(10).default(0.5)
+};
+var auditSchema = {
+  nodeId: label,
+  maxNodes: external_exports.number().int().min(1).max(1e4).default(2e3),
+  maxFindings: external_exports.number().int().min(1).max(500).default(100),
+  tolerance: external_exports.number().finite().min(0).max(10).default(0.5),
+  checkTextStyles: external_exports.boolean().default(true),
+  maxStyles: external_exports.number().int().min(1).max(2e3).default(500),
+  rules: external_exports.object({
+    designSystem: designRulesSchema.optional(),
+    spacing: external_exports.array(external_exports.number().finite().min(0).max(1e3)).min(1).max(30).optional(),
+    componentStates: external_exports.array(external_exports.object({
+      nodeId: label.describe("Verified COMPONENT_SET ID inside the audited subtree."),
+      property: label.describe("Exact variant property name, for example State."),
+      required: external_exports.array(label).min(1).max(20)
+    }).strict()).max(50).optional()
+  }).strict().default({})
+};
+
 // src/design-schema.mjs
 var name = external_exports.string().trim().min(1).max(100);
 var color = external_exports.string().regex(/^#[0-9a-fA-F]{6}$/);
@@ -4108,7 +4144,7 @@ var syncGuideSchema = {
 };
 
 // src/project-config.mjs
-var label = external_exports.string().trim().min(1).max(200);
+var label2 = external_exports.string().trim().min(1).max(200);
 var relativeFile = external_exports.string().min(1).max(500).refine((value) => !isAbsolute(value) && !/^[a-z]:/i.test(value) && !value.includes("\\") && !value.split("/").includes(".."), "Use a project-relative path without ..");
 var positive = external_exports.number().finite().positive();
 var documentationHosts = Object.freeze(["ui.shadcn.com", "gravity-ui.com", "developers.figma.com"]);
@@ -4125,28 +4161,29 @@ var projectConfigSchema = external_exports.object({
   schemaVersion: external_exports.literal(1).default(1),
   onboarding: external_exports.object({ status: external_exports.enum(["configured", "deferred"]), designSystem: external_exports.enum(["existing", "shadcn-ui", "material", "custom", "later"]) }).strict().optional(),
   density: external_exports.enum(["comfortable", "compact"]).optional(),
-  profile: label.optional(),
+  profile: label2.optional(),
   profileFile: relativeFile.optional(),
   library: external_exports.object({
-    name: label,
+    name: label2,
     mode: external_exports.enum(["reference", "local-components"]),
     docs: documentationUrl.optional(),
-    components: external_exports.record(label, label).default({})
+    components: external_exports.record(label2, label2).default({})
   }).strict().optional(),
   foundation: external_exports.object({
-    name: label,
-    collectionId: label.optional(),
+    name: label2,
+    collectionId: label2.optional(),
     theme: external_exports.enum(["light", "dark", "custom"]).optional(),
-    fontFamily: label.optional(),
+    fontFamily: label2.optional(),
     colors: syncGuideSchema.colors,
     typography: syncGuideSchema.typography,
     spacing: external_exports.array(external_exports.number().finite().min(0).max(1e3)).max(30).refine((values) => new Set(values).size === values.length, "Spacing values must be unique").optional(),
     radii: syncGuideSchema.radii
   }).strict().optional(),
   grid: external_exports.object({ columns: external_exports.number().int().min(1).max(24), gutter: external_exports.number().min(0).max(200), margin: external_exports.number().min(0).max(500) }).strict().optional(),
-  naming: external_exports.object({ frames: label.optional(), components: label.optional(), layers: label.optional() }).strict().optional(),
-  componentStates: external_exports.record(label, external_exports.array(label).min(1).max(20)).optional(),
-  viewports: external_exports.record(label, positive.max(1e4)).optional(),
+  naming: external_exports.object({ frames: label2.optional(), components: label2.optional(), layers: label2.optional() }).strict().optional(),
+  audit: external_exports.object({ designSystem: designRulesSchema.optional() }).strict().optional(),
+  componentStates: external_exports.record(label2, external_exports.array(label2).min(1).max(20)).optional(),
+  viewports: external_exports.record(label2, positive.max(1e4)).optional(),
   rulesFiles: external_exports.array(relativeFile).max(20).default([]),
   rules: external_exports.array(external_exports.string().min(1).max(2e3)).max(100).default([])
 }).strict();
@@ -4205,6 +4242,10 @@ async function loadProjectRules(projectRoot) {
     config,
     ruleFiles,
     guidePatch,
+    auditRules: {
+      ...foundation?.spacing?.length ? { spacing: foundation.spacing } : {},
+      ...config.audit?.designSystem ? { designSystem: config.audit.designSystem } : {}
+    },
     documentation: config.library?.docs ? {
       url: config.library.docs,
       allowedHosts: documentationHosts,
@@ -4245,15 +4286,15 @@ async function loadDistribution(packageRoot = dirname(dirname(fileURLToPath(impo
 }
 
 // src/onboarding.mjs
-var label2 = external_exports.string().trim().min(1).max(200);
+var label3 = external_exports.string().trim().min(1).max(200);
 var answersSchema = external_exports.object({
   designSystem: external_exports.enum(["existing", "shadcn-ui", "material", "custom", "later", "distribution"]),
-  name: label2.optional(),
-  libraryName: label2.optional(),
+  name: label3.optional(),
+  libraryName: label3.optional(),
   theme: external_exports.enum(["existing", "light", "dark"]).optional(),
   density: external_exports.enum(["existing", "comfortable", "compact"]).optional(),
   platform: external_exports.enum(["existing", "web", "mobile", "both"]).optional(),
-  fontFamily: label2.optional(),
+  fontFamily: label3.optional(),
   primaryColor: external_exports.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),
   rules: external_exports.array(external_exports.string().trim().min(1).max(2e3)).max(30).optional()
 }).strict().superRefine((value, context) => {

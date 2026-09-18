@@ -12,7 +12,7 @@ const proof = (token, role, serverNonce, clientNonce, version) => createHmac('sh
 const equal = (a, b) => validNonce(a) && validNonce(b) && timingSafeEqual(Buffer.from(a), Buffer.from(b));
 const errorWithCode = (message, code) => Object.assign(new Error(message), { code });
 
-export async function createSharedWorker({ port, installationToken, diagnostics, timeoutMs = 120000, idleMs = 3000 }) {
+export async function createSharedWorker({ port, installationToken, diagnostics, timeoutMs = 120000, idleMs = 3000, historyDirectory }) {
   let bridge, idleTimer, closing;
   const clients = new Set(), waiting = new Set(), owners = new Map();
   const close = () => closing ??= (async () => {
@@ -56,6 +56,7 @@ export async function createSharedWorker({ port, installationToken, diagnostics,
         let result;
         if (message.method === 'info') result = { ...bridge.info(message.skillVersion), transport: 'shared', clientCount: clients.size };
         else if (message.method === 'getOperation') result = bridge.getOperation(message.operationId);
+        else if (message.method === 'listOperations') result = bridge.listOperations(message.args);
         else if (message.method === 'request') {
           if (typeof message.command !== 'string' || message.command.length > 100 || !message.args || typeof message.args !== 'object'
             || !message.options || typeof message.options.write !== 'boolean') throw new Error('Invalid bridge command');
@@ -87,7 +88,7 @@ export async function createSharedWorker({ port, installationToken, diagnostics,
       }
     });
   }
-  bridge = await createBridge({ port, installationToken, diagnostics, timeoutMs, onLocalClient: localClient });
+  bridge = await createBridge({ port, installationToken, diagnostics, timeoutMs, onLocalClient: localClient, historyDirectory });
   scheduleIdle();
   return { close, info: () => ({ ...bridge.info(), clientCount: clients.size }) };
 }
@@ -141,6 +142,7 @@ export function connectSharedBridge({ port, installationToken, timeoutMs = 12000
         } else if (challenge && message?.type === 'authenticated' && equal(message.proof, proof(installationToken, 'server', challenge, clientNonce, VERSION))) {
           authenticated = true; clearTimeout(authTimer);
           resolve({ info: skillVersion => rpc('info', { skillVersion }), getOperation: operationId => rpc('getOperation', { operationId }),
+            listOperations: args => rpc('listOperations', { args }),
             request: (command, args, options = {}) => rpc('request', { command, args, options: { write: false, ...options }, skillVersion: options.skillVersion }),
             async close() { socket.terminate(); } });
         } else { clearTimeout(authTimer); fail(new Error('Unrecognized or unauthenticated service on bridge port')); socket.terminate(); }

@@ -1,7 +1,7 @@
 import vm from 'node:vm';
 import { readFileSync } from 'node:fs';
 
-export function pluginHarness() {
+export function pluginHarness({ clock = Date } = {}) {
   const nodes = new Map();
   const messages = [];
   const fonts = [];
@@ -65,14 +65,16 @@ export function pluginHarness() {
       if (['FRAME', 'COMPONENT', 'INSTANCE'].includes(type)) Object.assign(result, { layoutMode: 'NONE', primaryAxisSizingMode: 'AUTO', itemSpacing: 0,
         paddingTop: 0, paddingBottom: 0, paddingLeft: 0, paddingRight: 0, clipsContent: true });
       if (type === 'TEXT') Object.assign(result, { characters: '', fontName: { family: 'Inter', style: 'Regular' },
-        fontSize: 12, textAlignHorizontal: 'LEFT', textAutoResize: 'NONE', lineHeight: { unit: 'AUTO' }, textStyleId: '',
+        fontSize: 12, textAlignHorizontal: 'LEFT', textAutoResize: 'NONE', lineHeight: { unit: 'AUTO' }, textStyleId: '', textWrapStyle: 'AUTO',
         async setTextStyleIdAsync(id) {
+          if (id === '') { this.textStyleId = ''; return; }
           const style = styles.get(id);
           if (!style) throw new Error('Missing text style');
           this.textStyleId = id;
           this.fontName = style.fontName;
           this.fontSize = style.fontSize;
           this.lineHeight = style.lineHeight;
+          this.textWrapStyle = style.textWrapStyle;
         },
         getRangeAllFontNames(start, end) {
           if (end <= start) throw new Error('Empty range selected');
@@ -120,8 +122,9 @@ export function pluginHarness() {
   root.setPluginData = (key, value) => pluginData.set(key, value);
   const page = node('PAGE', 'Page 1', root);
   const figma = {
+    clientStorage: { async getAsync() {}, async setAsync() {} },
     root, currentPage: page, mixed: Symbol('mixed'), editorType: 'figma', on() {},
-    ui: { postMessage(message) { messages.push(message); } }, showUI() {},
+    ui: { postMessage(message) { messages.push(message); }, resize() {}, reposition() {} }, showUI() {},
     async getNodeByIdAsync(id) { return nodes.get(id) ?? null; },
     async loadFontAsync(font) { fonts.push(font); },
     createPage: () => node('PAGE', 'Page', root),
@@ -130,7 +133,7 @@ export function pluginHarness() {
     async getLocalTextStylesAsync() { return [...styles.values()]; },
     createTextStyle() {
       const id = `style:${nextId++}`;
-      const style = { id, type: 'TEXT', name: '', fontName: { family: 'Inter', style: 'Regular' }, fontSize: 12,
+      const style = { id, type: 'TEXT', name: '', fontName: { family: 'Inter', style: 'Regular' }, fontSize: 12, textWrapStyle: 'AUTO',
         remove() { styles.delete(id); } };
       styles.set(id, style);
       return style;
@@ -190,7 +193,7 @@ export function pluginHarness() {
     base64Decode: value => new Uint8Array(Buffer.from(value, 'base64')),
   };
   vm.runInNewContext(readFileSync(new URL('../plugin/code.js', import.meta.url), 'utf8'), {
-    figma, __html__: '', console,
+    figma, __html__: '', console, Date: clock,
   });
   return { figma, page, root, node, nodes, fonts, variables, styles, collections, get undoCount() { return undoCount; },
     async getDocument() {

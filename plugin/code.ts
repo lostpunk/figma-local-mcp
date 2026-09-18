@@ -6,6 +6,10 @@ import { getCapabilities, setDeclaredPlan } from './capabilities';
 import { extendedCommands, executeExtended } from './extended';
 import { variableResolver } from './variables';
 import { auditDesign } from './audit';
+import { previewChanges, applyChanges } from './changes';
+import { previewDesignFixes } from './design-fixes';
+import { previewAuditFixes } from './audit-fixes';
+import { createPresentation, initialWindowSize } from './presentation';
 type Args = Record<string, any>;
 type Json = Record<string, any>;
 const properties = [
@@ -207,6 +211,10 @@ async function execute(command: string, args: Args): Promise<any> {
   if (designCommands.has(command)) return executeDesignCommand(command, args, { getNode, applyProps, createNode });
   const budget = { left: args.maxNodes ?? 200 };
   switch (command) {
+    case 'preview_design_fixes': return previewDesignFixes(args as any, getNode);
+    case 'preview_changes': return previewChanges(args, getNode);
+    case 'preview_audit_fixes': return previewAuditFixes(args as any, getNode);
+    case 'apply_changes': return applyChanges(args, getNode);
     case 'audit_design': return auditDesign(await getNode(args.nodeId), args);
     case 'get_document':
       return { name: figma.root.name, currentPageId: figma.currentPage.id,
@@ -393,13 +401,15 @@ async function execute(command: string, args: Args): Promise<any> {
   }
 }
 
-figma.showUI(__html__, { width: 380, height: 480, themeColors: true });
+figma.showUI(__html__, { ...initialWindowSize, themeColors: true });
+const presentation = createPresentation();
 let busy = false;
 function publishDocument() {
   figma.ui.postMessage({ type: 'document', document: { name: figma.root.name, page: figma.currentPage.name,
     pluginVersion: __PACKAGE_VERSION__, capabilities: getCapabilities() } });
 }
 figma.on('currentpagechange', publishDocument);
+const findingTargets = new Set<string>();
 figma.ui.onmessage = async (message: any) => {
   if (message?.type === 'decode-image-result' && typeof message.id === 'string') {
     const pending = imageDecodeRequests.get(message.id);
@@ -413,6 +423,25 @@ figma.ui.onmessage = async (message: any) => {
   }
   if (message?.type === 'init') {
     publishDocument();
+    await presentation.initialize();
+    return;
+  }
+  // Window controls are independent of document operations and never disconnect the bridge.
+  if (message?.type === 'presentation-mode') { presentation.setMode(message.compact); return; }
+  if (message?.type === 'presentation-move') { presentation.move(message.edge); return; }
+  if (message?.type === 'focus-finding') {
+    if (busy) { figma.ui.postMessage({ type: 'focus-result', error: 'Дождитесь завершения операции.' }); return; }
+    if (!findingTargets.has(message.nodeId)) { figma.ui.postMessage({ type: 'focus-result', error: 'Повторите аудит: слоя нет в последнем отчёте.' }); return; }
+    busy = true;
+    try {
+      const node = await getNode(message.nodeId);
+      const page = pageOf(node);
+      await figma.setCurrentPageAsync(page);
+      if (node.type !== 'PAGE') page.selection = [requireScene(node)];
+      figma.viewport.scrollAndZoomIntoView([node]);
+      figma.ui.postMessage({ type: 'focus-result' });
+    } catch { figma.ui.postMessage({ type: 'focus-result', error: 'Слой недоступен. Повторите аудит.' }); }
+    finally { busy = false; }
     return;
   }
   if (message?.type === 'set-plan') {
@@ -429,6 +458,11 @@ figma.ui.onmessage = async (message: any) => {
   busy = true;
   try {
     const result = await execute(message.command, message.args ?? {});
+    if (['audit_design', 'preview_audit_fixes', 'preview_design_fixes'].includes(message.command)) {
+      findingTargets.clear();
+      for (const finding of (result.findings ?? result.skipped ?? []).slice(0, 500))
+        if (typeof finding.nodeId === 'string') findingTargets.add(finding.nodeId);
+    }
     figma.ui.postMessage({ type: 'result', id: message.id, result });
   } catch (error) {
     figma.ui.postMessage({ type: 'result', id: message.id, error: error instanceof Error ? error.message : String(error) });

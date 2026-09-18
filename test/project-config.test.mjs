@@ -83,3 +83,13 @@ test('project documentation URLs enforce exact HTTPS hosts and expose reading co
   await config(root, { library: { name: 'Internal kit', mode: 'reference' } });
   assert.equal((await loadProjectRules(root)).documentation, null);
 });
+
+test('explicit project audit rules round-trip without adding implicit allowlists', async t => {
+  const root = await fixture(t);
+  const designSystem = { colorVariableIds: ['VariableID:1'], textStyleIds: ['style:1'], componentIds: ['1:2'], ignoreNodeIds: ['1:3'] };
+  await config(root, { foundation: { name: 'Brand', spacing: [8, 16] }, audit: { designSystem } });
+  assert.deepEqual((await loadProjectRules(root)).auditRules, { spacing: [8, 16], designSystem });
+  await config(root, {}); assert.deepEqual((await loadProjectRules(root)).auditRules, {});
+  await config(root, { audit: { designSystem: { colors: ['red'] } } });
+  await assert.rejects(loadProjectRules(root), /Unrecognized key/);
+});

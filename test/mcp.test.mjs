@@ -37,7 +37,12 @@ for (const bundled of [false, true]) test(`MCP → WebSocket → plugin: full wo
   const call = (name, args = {}) => client.callTool({ name, arguments: args });
   const data = result => JSON.parse(result.content[0].text);
   const listed = await client.listTools();
-  assert.equal(listed.tools.length, 32);
+  assert.equal(listed.tools.length, 37);
+  assert.equal(listed.tools.find(t => t.name === 'preview_design_fixes').annotations.readOnlyHint, true);
+  assert.equal(listed.tools.find(t => t.name === 'preview_audit_fixes').annotations.readOnlyHint, true);
+  assert.equal(listed.tools.find(t => t.name === 'list_operations').annotations.readOnlyHint, true);
+  assert.equal(listed.tools.find(t => t.name === 'preview_changes').annotations.readOnlyHint, true);
+  assert.equal(listed.tools.find(t => t.name === 'apply_changes').annotations.readOnlyHint, false);
   assert.equal(listed.tools.find(t => t.name === 'audit_design').annotations.readOnlyHint, true);
   assert.equal(listed.tools.find(t => t.name === 'audit_design').annotations.destructiveHint, false);
   assert.equal(listed.tools.find(t => t.name === 'move_component').annotations.readOnlyHint, false);
@@ -89,6 +94,22 @@ for (const bundled of [false, true]) test(`MCP → WebSocket → plugin: full wo
   assert.equal((await call('create_node', { type: 'RECTANGLE' })).isError, true);
   assert.equal(dispatchCount, countAfterFirst, 'skill mismatch blocks writes before dispatch');
   await call('get_connection', { skillVersion });
+
+  const beforeInvalidPlan = dispatchCount;
+  assert.equal((await call('preview_changes', { changes: [{ nodeId: first.id, props: { characters: 'Not supported' } }] })).isError, true);
+  assert.equal(dispatchCount, beforeInvalidPlan, 'invalid preview is rejected before plugin dispatch');
+  const plan = data(await call('preview_changes', { changes: [{ nodeId: first.id, props: { width: 240, name: 'Unselected' } }] }));
+  assert.equal(h.nodes.get(first.id).width, 100);
+  const applyArgs = { planId: plan.planId, changeIds: [plan.changes.find(c => c.property === 'width').id], _operationId: data(await call('get_connection')).nextOperationId };
+  const appliedResponse = await call('apply_changes', applyArgs);
+  assert.equal(appliedResponse.isError, undefined);
+  const applied = data(appliedResponse);
+  const countAfterApply = dispatchCount;
+  assert.deepEqual(data(await call('apply_changes', applyArgs)), applied);
+  assert.equal(dispatchCount, countAfterApply, 'operation recovery does not reapply a consumed plan');
+  assert.equal(h.nodes.get(first.id).width, 240);
+  assert.equal(h.nodes.get(first.id).name, 'Exactly once');
+  assert.equal((await call('apply_changes', { planId: plan.planId, changeIds: applyArgs.changeIds })).isError, true);
 
   const create = await call('create_node', { type: 'TEXT', props: { characters: 'Hello', fontSize: 24 } });
   assert.equal(create.isError, undefined);
@@ -194,4 +215,14 @@ for (const bundled of [false, true]) test(`MCP → WebSocket → plugin: full wo
   assert.equal(quality.complete, true);
   assert.ok(quality.coverage.visited > 0);
   assert.equal(h.undoCount, undoBeforeAudit);
+  const auditFrame = data(await call('create_node', { type: 'FRAME', props: { width: 200, height: 100 } }));
+  const outside = data(await call('create_node', { type: 'RECTANGLE', parentId: auditFrame.id, props: { x: 190, y: 0, width: 40, height: 40 } }));
+  const fixes = data(await call('preview_audit_fixes', { nodeId: auditFrame.id, nodeIds: [outside.id] }));
+  assert.equal(fixes.plan.changes[0].after, 160);
+  assert.equal((await call('apply_changes', { planId: fixes.plan.planId, changeIds: fixes.plan.changes.map(c => c.id) })).isError, undefined);
+  assert.equal(data(await call('audit_design', { nodeId: auditFrame.id, checkTextStyles: false })).findings.length, 0);
+  const beforeHistory = dispatchCount;
+  const history = data(await call('list_operations', { limit: 1 }));
+  assert.equal(history.entries[0].command, 'apply_changes');
+  assert.equal(dispatchCount, beforeHistory, 'history reads never reach Figma');
 });

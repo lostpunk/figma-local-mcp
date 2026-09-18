@@ -19,7 +19,8 @@ export async function verifyInstallation(runtime, skill, version) {
     const connection = JSON.parse(response.content[0].text);
     const tools = (await client.listTools()).tools;
     if (response.isError || serverVersion !== version || connection.pairingCode !== undefined || connection.pairingMode !== 'automatic'
-      || connection.assetAccess?.version !== 1 || !tools.some(tool => tool.name === 'audit_design' && tool.annotations?.readOnlyHint)) {
+      || connection.assetAccess?.version !== 1 || !['audit_design', 'preview_audit_fixes', 'preview_design_fixes', 'list_operations'].every(name => tools.some(tool => tool.name === name && tool.annotations?.readOnlyHint))
+      || connection.history?.mode !== 'memory' || connection.history?.healthy !== true) {
       throw new Error('Staged MCP verification failed');
     }
     return { serverVersion, pluginVersion, toolCount: tools.length, pairingSecretAbsent: true };

@@ -1,6 +1,6 @@
 {
   "name": "figma-local-mcp",
-  "version": "0.7.18",
+  "version": "0.7.24",
   "private": true,
   "type": "module",
   "engines": {

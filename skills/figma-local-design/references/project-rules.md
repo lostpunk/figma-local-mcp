@@ -57,3 +57,9 @@ Rules such as “always use our Button” guide the agent. To enforce them for e
 ## Checking the result
 
 Pass declared `foundation.spacing` to `audit_design.rules.spacing`. Resolve `componentStates` to actual component-set IDs and exact variant property values before including state rules. See [quality-checks.md](quality-checks.md). Grid specifications, naming templates and free-text rules still require review by the agent; the audit does not silently enforce them.
+
+### Persisted quality rules
+
+Optional `audit.designSystem` stores `colorVariableIds`, `textStyleIds`, `componentIds`, and `ignoreNodeIds` for this project/file. Verify IDs using the connected file before audit. Do not populate an allowlist from every resource in the file: select the actual project system. Exceptions express intentional departures and apply to the exact node only.
+
+The project CLI returns `auditRules`, combining declared foundation spacing and these explicit design-system rules. Pass it as `audit_design.rules` after verifying IDs, and add separately resolved component-state rules if applicable. Existing configurations remain valid and do not gain new enforcement automatically. See quality-checks.md and preview-changes.md for binding previews and coverage limits.

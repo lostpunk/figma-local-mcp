@@ -48,6 +48,7 @@ test('shared clients serialize writes, reject ID collisions and retain one plugi
   assert.deepEqual(await a.request('create_node', { type: 'RECTANGLE' }, options), { ok: true });
   assert.equal(dispatches, 1);
   assert.equal((await b.getOperation(options.operationId)).status, 'completed');
+  assert.equal((await b.listOperations({ limit: 1 })).entries[0].operationId, options.operationId);
   await a.close();
   assert.deepEqual(await b.request('get_document', {}), { ok: true });
   assert.equal(worker.info().clientCount, 1);

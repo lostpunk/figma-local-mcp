@@ -67,10 +67,13 @@ test('failure promoting the second copy rolls back both directories', async t =>
 for (const failSkill of [false, true]) test(`runtime logging during replacement preserves the live directory (${failSkill ? 'rollback' : 'success'})`, async t => {
   const f = await fixture(t), inode = (await stat(f.runtime)).ino;
   const logger = createDiagnostics({ directory: join(f.runtime, 'generated/logs') });
+  const liveHistory = join(f.runtime, 'generated/operation-history/port-3055.enc');
+  await f.put(liveHistory, 'opaque-history-before-update');
   let writes = 0;
   const run = updateLocal({ ...f.options, move: async (from, to) => {
     assert.notEqual(from, f.runtime, 'the mutable runtime root must never be moved');
     logger.record('info', 'mcp_client_connected'); writes++;
+    await writeFile(liveHistory, `opaque-history-updated-${writes}`);
     // A policy edit after staging must also survive publication and rollback.
     await writeFile(join(f.runtime, 'generated/asset-access.json'), '{"version":1,"allowedRoots":[],"changed":true}');
     if (failSkill && to === f.skill) throw new Error('simulated skill promotion failure');
@@ -85,6 +88,7 @@ for (const failSkill of [false, true]) test(`runtime logging during replacement 
   assert.equal(await readFile(join(f.skill, 'SKILL.md'), 'utf8'), failSkill ? 'old skill' : 'new skill');
   assert.equal(JSON.parse(await readFile(join(f.runtime, 'generated/asset-access.json'))).changed, true);
   assert.ok(logger.read().entries.some(entry => entry.event === 'operation_result'));
+  assert.equal(await readFile(liveHistory, 'utf8'), `opaque-history-updated-${writes}`, 'publication/rollback must not restore the staged history over live writes');
   await assert.rejects(readFile(join(f.home, '.figma-local-update.lock')), { code: 'ENOENT' });
 });
 

@@ -1,8 +1,9 @@
+import { DesignRules, resolveDesignRules, inspectDesignNode } from './design-review';
 type StateRule = { nodeId: string; property: string; required: string[] };
 type AuditArgs = {
   maxNodes?: number; maxFindings?: number; tolerance?: number;
   checkTextStyles?: boolean; maxStyles?: number;
-  rules?: { spacing?: number[]; componentStates?: StateRule[] };
+  rules?: { designSystem?: DesignRules; spacing?: number[]; componentStates?: StateRule[] };
 };
 type Finding = {
   code: string; severity: 'warning' | 'info'; nodeId?: string; name?: string;
@@ -36,7 +37,22 @@ export async function auditDesign(root: BaseNode, args: AuditArgs) {
   const note = (node: BaseNode, code: string, message: string, evidence?: Record<string, unknown>, severity: 'warning' | 'info' = 'warning') =>
     add({ code, severity, nodeId: node.id, name: bounded(node.name), message, evidence });
 
-  const check = (node: SceneNode | PageNode) => {
+  let designResources: Awaited<ReturnType<typeof resolveDesignRules>> | undefined;
+  let designChecked = 0, designIgnored = 0;
+  if (rules.designSystem) {
+    try { designResources = await resolveDesignRules(rules.designSystem); }
+    catch (error) { failedChecks++; add({ code: 'DESIGN_RULES_INVALID', severity: 'warning', message: error instanceof Error ? error.message : String(error) }); }
+  }
+
+  const check = async (node: SceneNode | PageNode) => {
+    if (designResources && rules.designSystem && node.type !== 'PAGE') {
+      if (rules.designSystem.ignoreNodeIds?.includes(node.id)) designIgnored++;
+      else {
+        for (const finding of await inspectDesignNode(node, rules.designSystem, designResources))
+          note(node, finding.code, finding.message, finding.evidence);
+        designChecked++;
+      }
+    }
     const parent = node.parent;
     if (node !== root && node.type !== 'PAGE' && parent &&
         ['FRAME', 'COMPONENT', 'INSTANCE', 'SECTION'].includes(parent.type) && 'width' in parent) {
@@ -109,7 +125,7 @@ export async function auditDesign(root: BaseNode, args: AuditArgs) {
       continue;
     }
     try {
-      check(node as SceneNode | PageNode);
+      await check(node as SceneNode | PageNode);
       checked++;
     } catch {
       failedChecks++;
@@ -147,6 +163,7 @@ export async function auditDesign(root: BaseNode, args: AuditArgs) {
     complete: !nodesTruncated && findingCount <= maxFindings && !stylesTruncated && !failedChecks && !uncheckedStateRules.length,
     coverage: { visited, checked, hiddenSubtrees, nodesTruncated, findingsTruncated: findingCount > maxFindings,
       textStyles: { scope: 'local_file', enabled: args.checkTextStyles !== false, checked: stylesChecked, truncated: stylesTruncated },
+      designSystem: { enabled: Boolean(rules.designSystem), checked: designChecked, ignored: designIgnored },
       spacingChecked: Boolean(rules.spacing?.length), stateRulesChecked: seenStateRules.size, uncheckedStateRules, failedChecks },
     limitations: [
       'Findings are review candidates, not automatic fixes or an accessibility certification.',

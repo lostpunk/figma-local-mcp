@@ -2,7 +2,26 @@
 <html lang="ru">
 <meta charset="utf-8">
 <style>
-  body { font: 12px/1.5 Inter, system-ui, sans-serif; margin: 20px; color: var(--figma-color-text, #222); background: var(--figma-color-bg, #fff); }
+  body { font: 12px/1.5 Inter, system-ui, sans-serif; margin: 0; color: var(--figma-color-text, #222); background: var(--figma-color-bg, #fff); }
+  [hidden] { display: none !important; }
+  #toolbar { display: flex; align-items: center; gap: 8px; padding: 10px 12px; height: 64px; box-sizing: border-box; border-bottom: 1px solid var(--figma-color-border, #e4e4e7); }
+  #indicator { --signal: #737780; display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; margin: 0; padding: 3px; background: transparent; color: inherit; text-align: left; }
+  #indicator.ready { --signal: #14854a; } #indicator.running { --signal: #2563eb; }
+  #indicator.warning { --signal: #b76a00; } #indicator.error { --signal: #d43838; }
+  #signal { display: grid; place-items: center; width: 24px; height: 24px; flex-shrink: 0; border-radius: 50%; background: var(--signal); color: white; font-weight: 700; }
+  #indicator.pulse #signal { animation: attention 850ms ease-in-out 3; }
+  @keyframes attention { 50% { box-shadow: 0 0 0 5px color-mix(in srgb, var(--signal) 20%, transparent); } }
+  @media (prefers-reduced-motion: reduce) { #indicator.pulse #signal { animation: none; } }
+  #indicator-copy { min-width: 0; } #indicator-copy strong { display: block; font-size: 12px; }
+  #indicator-label { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 11px; }
+  #toggle-panel { margin: 0; padding: 6px 9px; background: var(--figma-color-bg-secondary, #f0f1f3); color: inherit; font-size: 11px; }
+  button:focus-visible { outline: 2px solid var(--figma-color-border-brand, #2563eb); outline-offset: 2px; }
+  #panel-content { padding: 16px 20px; height: calc(100vh - 64px); box-sizing: border-box; overflow: auto; }
+  #notice { border-left: 3px solid var(--figma-color-border-warning, #b76a00); background: var(--figma-color-bg-secondary, #f4f4f5); padding: 10px; margin: 0 0 14px; }
+  #notice-text { margin: 0; overflow-wrap: anywhere; } #acknowledge { margin-top: 6px; padding: 4px 8px; }
+  #notice.error { border-left-color: #d43838; }
+  .placement { display: flex; gap: 8px; } .placement button { margin: 0; background: var(--figma-color-bg-secondary, #f0f1f3); color: inherit; }
+  .hint { color: var(--figma-color-text-secondary, #686b73); font-size: 11px; }
   h1 { font-size: 18px; margin: 0 0 8px; }
   p { margin: 8px 0 14px; }
   label { display: block; margin-bottom: 6px; }
@@ -13,7 +32,17 @@
   #activity { opacity: .7; font-size: 11px; }
   #diagnostic-log { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 180px; overflow: auto; font: 10px/1.4 monospace; user-select: text; }
 </style>
-<h1>Figma Local MCP</h1>
+<div id="toolbar">
+  <button id="indicator" type="button" title="Открыть подробности" aria-label="Открыть состояние подключения">
+    <span id="signal" aria-hidden="true">·</span>
+    <span id="indicator-copy"><strong>Figma Local MCP</strong><span id="indicator-label" role="status">Ожидание MCP</span></span>
+  </button>
+  <button id="toggle-panel" type="button" aria-expanded="false" aria-controls="panel-content">Развернуть</button>
+</div>
+<main id="panel-content" hidden>
+<div id="notice" hidden><p id="notice-text" role="status"></p><button id="acknowledge" type="button">Прочитано</button></div>
+<div class="placement"><button id="move-left" type="button">К левому краю</button><button id="move-right" type="button">К правому краю</button></div>
+<p class="hint">Окно можно перетащить за заголовок. Сворачивание сохраняет соединение.</p>
 <p id="intro">Откройте <b>get_connection</b> в MCP-клиенте и вставьте код подключения.</p>
 <div id="pairing">
 <label for="token">Код подключения</label>
@@ -24,7 +53,7 @@
 <div id="status" role="status">Ожидание подключения</div>
 <p id="versions"></p>
 <p id="recovery" role="status"></p>
-<p id="activity">Держите это окно открытым во время работы.</p>
+<p id="activity">Плагин работает и в свёрнутом режиме. Закрытие окна остановит его.</p>
 <label for="file-plan">Тариф команды этого файла</label>
 <select id="file-plan">
   <option value="unknown">Неизвестен — до 3 страниц</option>
@@ -35,6 +64,10 @@
   <option value="enterprise">Enterprise</option>
 </select>
 <p id="page-budget">Тариф недоступен через Plugin API. Можно указать его вручную.</p>
+<section id="quality" hidden><h2 style="font-size:14px">Проверка макета</h2>
+<p id="quality-summary" role="status"></p><p id="quality-action"></p>
+<div id="quality-findings" style="max-height:200px;overflow:auto"></div>
+<p id="quality-focus-status" role="status"></p></section>
 <details><summary>Журнал событий и ошибок</summary>
 <p>Последние 50 событий этого запуска. Постоянные логи: get_diagnostics в MCP.</p>
 <pre id="diagnostic-log" aria-label="Журнал диагностики"></pre>
@@ -42,6 +75,7 @@
 <textarea id="support-report" hidden readonly aria-label="Отчёт для поддержки" style="width:100%;height:150px"></textarea>
 <p id="copy-status" role="status"></p>
 </details>
+</main>
 <script>
   const installationToken = '';
   const status = document.getElementById('status');
@@ -61,6 +95,69 @@
   const versions = document.getElementById('versions');
   const recovery = document.getElementById('recovery');
   const lateResults = [];
+  let compact = true;
+  let requestedMode;
+  let connectionState = 'waiting';
+  let notice;
+  let warnedOperation;
+  let warnedVersion;
+  const indicator = document.getElementById('indicator');
+  function renderIndicator(pulse = false) {
+    if (!indicator) return;
+    const busy = Boolean(activeRequest);
+    const mismatch = connectionState === 'ready' && serverVersion && documentInfo?.pluginVersion && serverVersion !== documentInfo.pluginVersion;
+    const kind = notice?.unread ? notice.level : mismatch ? 'warning' : busy ? 'running' : connectionState;
+    const label = notice?.unread ? notice.short : mismatch ? 'Версии отличаются' : busy ? 'Выполняется операция' : {
+      ready: 'Подключено', waiting: 'Ожидание MCP', connecting: 'Подключение…', offline: 'Отключено',
+    }[connectionState];
+    const continuingPulse = indicator.className === kind + ' pulse';
+    indicator.className = kind;
+    document.getElementById('signal').textContent = { ready: '✓', running: '↻', warning: '!', error: '!' }[kind] || '·';
+    document.getElementById('indicator-label').textContent = label;
+    indicator.title = notice?.unread ? notice.text : 'Открыть подробности';
+    indicator.setAttribute('aria-label', label + '. Открыть подробности');
+    if (pulse) void indicator.offsetWidth;
+    if (pulse || continuingPulse) indicator.className += ' pulse';
+  }
+  function important(code, level, short, text) {
+    if (notice?.unread && notice.level === 'error' && level !== 'error') return;
+    const fresh = !notice?.unread || notice.code !== code;
+    notice = { code, level, short, text, unread: true };
+    const box = document.getElementById('notice');
+    if (box) {
+      box.hidden = false;
+      box.className = level;
+      document.getElementById('notice-text').textContent = text;
+      document.getElementById('acknowledge').hidden = false;
+    }
+    renderIndicator(fresh);
+  }
+  function acknowledge() {
+    if (notice) notice.unread = false;
+    const button = document.getElementById('acknowledge');
+    if (button) button.hidden = true;
+    if (indicator) indicator.className = ''; // A persistent warning can remain, but its pulse is acknowledged.
+    renderIndicator();
+  }
+  function displayMode(value) {
+    compact = value;
+    const content = document.getElementById('panel-content'), toggle = document.getElementById('toggle-panel');
+    if (content) content.hidden = compact;
+    if (toggle) { toggle.textContent = compact ? 'Развернуть' : 'Свернуть'; toggle.setAttribute('aria-expanded', String(!compact)); }
+  }
+  function requestMode(value) {
+    requestedMode = value;
+    parent.postMessage({ pluginMessage: { type: 'presentation-mode', compact: value } }, '*');
+  }
+  if (indicator) indicator.onclick = () => requestMode(false);
+  const togglePanel = document.getElementById('toggle-panel');
+  if (togglePanel) togglePanel.onclick = () => requestMode(!(requestedMode ?? compact));
+  const acknowledgeButton = document.getElementById('acknowledge');
+  if (acknowledgeButton) acknowledgeButton.onclick = acknowledge;
+  for (const edge of ['left', 'right']) {
+    const button = document.getElementById('move-' + edge);
+    if (button) button.onclick = () => parent.postMessage({ pluginMessage: { type: 'presentation-move', edge } }, '*');
+  }
   function safeLogText(value) {
     if (value != null && !['string', 'number', 'boolean'].includes(typeof value)) return '[unsupported metadata]';
     return String(value ?? '').slice(0, 8000)
@@ -76,12 +173,71 @@
     history.push(new Date().toISOString() + ' ' + event + ' ' + safeLogText(detail));
     if (history.length > 50) history.shift();
     if (diagnosticLog) diagnosticLog.textContent = history.join('\n');
+    if (['ERROR', 'UI_ERROR', 'UI_REJECTION'].includes(event)) important('operation-error', 'error', 'Ошибка · подробности', 'Произошла ошибка. Проверьте журнал и результат операции перед повтором.');
+    renderIndicator();
   }
   filePlan.onchange = () => parent.postMessage({ pluginMessage: { type: 'set-plan', plan: filePlan.value } }, '*');
   let socket;
   let documentInfo;
   let activeRequest;
   let activeCommand;
+  let activeArgs;
+  const audits = new Map();
+  function showQuality(command, result) {
+    const panel = document.getElementById('quality');
+    if (!panel || !result) return;
+    const summary = document.getElementById('quality-summary');
+    const action = document.getElementById('quality-action');
+    const list = document.getElementById('quality-findings');
+    let items;
+    if (command === 'audit_design') {
+      panel.hidden = false;
+      const key = result.rootId + JSON.stringify(activeArgs?.rules ?? {});
+      const previous = audits.get(key);
+      summary.textContent = 'Проверено элементов: ' + result.coverage.checked + ' · Замечаний: ' + result.findingCount +
+        (previous === undefined ? '' : ' · В прошлой проверке: ' + previous);
+      if (result.complete) audits.set(key, result.findingCount);
+      if (audits.size > 10) audits.delete(audits.keys().next().value);
+      action.textContent = result.complete ? 'Структурная проверка завершена. Внешний вид проверяется отдельно.' : 'Проверка неполная: смотрите ограничения охвата в результате MCP.';
+      items = result.findings;
+      if (result.findingCount || !result.complete) important('audit', 'warning', 'Проверьте макет', 'Аудит обнаружил замечания или завершился не полностью. Подробности ниже.');
+    } else if (['preview_audit_fixes', 'preview_design_fixes'].includes(command)) {
+      panel.hidden = false;
+      summary.textContent = 'Предпросмотр выбранных слоёв';
+      action.textContent = 'Предложено изменений: ' + (result.plan?.changes.length ?? 0) + ' · Пропущено: ' + result.skipped.length + ' — правки ещё не применены.';
+      items = result.skipped.map(item => ({ ...item, message: item.reason }));
+    } else if (command === 'apply_changes') {
+      panel.hidden = false;
+      action.textContent = 'Изменено слоёв: ' + result.nodeIds.length + ' · Требуется повторный аудит, чтобы подтвердить исправления.';
+      return;
+    } else return;
+    list.replaceChildren();
+    for (const item of items.slice(0, 50)) {
+      const row = document.createElement('p');
+      const label = document.createElement('span');
+      const titles = { TEXT_RENDER_OUTSIDE_BOX: 'Текст выходит за рамку', OUTSIDE_PARENT: 'Элемент выходит за контейнер',
+        MISSING_FONT: 'Недоступен шрифт', TEXT_TRUNCATION_ENABLED: 'Включено сокращение текста',
+        SPACING_OFF_SCALE: 'Отступ вне шкалы проекта', UNBOUND_COLOR: 'Цвет без переменной',
+        COLOR_VARIABLE_OUTSIDE_SYSTEM: 'Переменная цвета вне дизайн-системы', MIXED_COLOR_BINDINGS: 'Разные цвета внутри текста',
+        TEXT_STYLE_OUTSIDE_SYSTEM: 'Текстовый стиль вне дизайн-системы', COMPONENT_OUTSIDE_SYSTEM: 'Компонент вне дизайн-системы',
+        DESIGN_RULES_INVALID: 'Проверьте правила дизайн-системы', COMPONENT_STATES_MISSING: 'Не хватает состояний компонента' };
+      label.textContent = [item.name, titles[item.code] || item.code, item.message].filter(Boolean).join(' · ');
+      row.appendChild(label);
+      if (item.nodeId) {
+        const button = document.createElement('button');
+        button.textContent = 'Показать слой';
+        button.onclick = () => {
+          if (activeRequest) { document.getElementById('quality-focus-status').textContent = 'Дождитесь завершения операции.'; return; }
+          parent.postMessage({ pluginMessage: { type: 'focus-finding', nodeId: item.nodeId } }, '*');
+        };
+        row.appendChild(button);
+      }
+      list.appendChild(row);
+    }
+    if (items.length > 50) {
+      const note = document.createElement('p'); note.textContent = 'Показаны первые 50 замечаний. Полный результат — в MCP.'; list.appendChild(note);
+    }
+  }
   let activeStartedAt;
   let responseSocket;
   let retryTimer;
@@ -91,6 +247,10 @@
   function showVersions() {
     if (versions) versions.textContent = 'Плагин: ' + (documentInfo?.pluginVersion ?? 'неизвестно') + '; MCP: ' + (serverVersion ?? 'не подключён');
     if (recovery && serverVersion && documentInfo?.pluginVersion !== serverVersion) recovery.textContent = 'Версии отличаются. Обновите MCP и плагин из одного пакета и перезапустите их.';
+    const mismatch = serverVersion && documentInfo?.pluginVersion && documentInfo.pluginVersion !== serverVersion ? serverVersion + '/' + documentInfo.pluginVersion : undefined;
+    if (mismatch && mismatch !== warnedVersion) important('version', 'warning', 'Обновите плагин', 'Версии MCP и плагина отличаются. Обновите и перезапустите их.');
+    warnedVersion = mismatch;
+    renderIndicator();
   }
   function supportReport() {
     // Deliberately excludes document names, IDs, text, paths, keys and free-form errors.
@@ -121,6 +281,10 @@
       const seconds = Math.floor((Date.now() - activeStartedAt) / 1000);
       activity.textContent = 'Выполняется: ' + activeCommand + ' · ' + seconds + ' с';
       if (seconds >= 120 && recovery) recovery.textContent = 'Операция ещё выполняется. Не повторяйте её; оставьте плагин открытым и проверьте get_operation.';
+      if (seconds >= 120 && warnedOperation !== activeRequest) {
+        warnedOperation = activeRequest;
+        important('long-operation', 'warning', 'Операция ещё идёт', 'Операция выполняется больше двух минут. Не повторяйте её; проверьте её статус в MCP.');
+      }
     }
   }, 1000);
   if (installationToken) {
@@ -141,6 +305,7 @@
     if (socket) { const previous = socket; socket = undefined; previous.close(); }
     const current = new WebSocket('ws://localhost:3055');
     socket = current;
+    connectionState = 'connecting'; renderIndicator();
     status.textContent = 'Подключение…';
     connect.disabled = true;
     disconnect.hidden = false;
@@ -152,11 +317,12 @@
       if (!message || typeof message !== 'object') { current.close(); return; }
       if (message.type === 'ready') {
         authenticatedSocket = current;
+        connectionState = 'ready';
         serverVersion = message.serverVersion;
         if (recovery) recovery.textContent = '';
         showVersions();
         retryDelay = 1000;
-        status.textContent = 'Подключено. MCP может читать и редактировать этот файл.';
+        status.textContent = 'Соединение с локальным MCP установлено.';
         disconnect.hidden = false;
         document.getElementById('token').value = '';
         journal('CONNECTED');
@@ -172,6 +338,7 @@
         }
         activeRequest = message.id;
         activeCommand = message.command;
+        activeArgs = message.args;
         activeStartedAt = Date.now();
         if (recovery) recovery.textContent = '';
         journal('START', activeCommand + ' id=' + activeRequest);
@@ -183,12 +350,16 @@
     };
     current.onclose = event => {
       if (socket !== current) return;
+      const wasReady = connectionState === 'ready';
+      connectionState = stopped ? 'offline' : 'waiting';
+      if (!stopped && (wasReady || activeRequest)) important('connection', 'warning', 'Связь потеряна', activeRequest ? 'Связь потеряна во время операции. Дождитесь результата; не повторяйте её.' : 'Соединение с MCP потеряно. Плагин попробует подключиться снова.');
       journal('DISCONNECTED', 'code=' + event.code + (activeRequest ? ' id=' + activeRequest + ' outcome=unknown' : ''));
       status.textContent = 'Отключено' + (event.reason ? ': ' + event.reason : '. Вызовите get_connection и подключитесь снова.');
       connect.disabled = false;
       disconnect.hidden = true;
       if (event.code === 1008) {
         stopped = true; lastErrorCode = 'CONNECTION_REJECTED';
+        important('rejected', 'error', 'Подключение отклонено', 'Подключение отклонено. Проверьте, не открыта ли вторая копия плагина.');
         if (recovery) recovery.textContent = 'Подключение отклонено. Закройте вторую копию плагина; если не помогло, обновите локальную установку и запустите Auto снова.';
       }
       if (installationToken && !stopped) {
@@ -207,6 +378,7 @@
     socket?.close();
     disconnect.hidden = true;
     status.textContent = 'Отключено';
+    connectionState = 'offline'; renderIndicator();
   };
   function base64FromBytes(bytes) {
     const chunk = 0x8000;
@@ -244,6 +416,24 @@
     // Correlate results with the active request instead of checking Window identity.
     const message = event.data?.pluginMessage;
     if (!message) return;
+    if (message.type === 'presentation-state' && typeof message.compact === 'boolean') {
+      displayMode(message.compact);
+      if (requestedMode === compact) {
+        requestedMode = undefined;
+        if (!compact) {
+          const content = document.getElementById('panel-content');
+          if (content) content.scrollTop = 0;
+          acknowledge();
+        }
+      }
+      return;
+    }
+    if (message.type === 'presentation-error') {
+      requestedMode = undefined;
+      journal('PRESENTATION_ERROR', message.error);
+      lastErrorCode = 'PRESENTATION_ERROR';
+      important('presentation', 'warning', 'Настройки окна', String(message.error)); return;
+    }
     if (message.type === 'decode-image' && typeof message.id === 'string' && typeof message.base64 === 'string') {
       void normalizeImage(message);
       return;
@@ -261,7 +451,12 @@
       if (socket === authenticatedSocket && socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'document', document: documentInfo }));
       if (installationToken && !socket && !stopped) connectToBridge();
     }
-    if (message.type === 'policy-error') { journal('POLICY_ERROR', message.error); pageBudget.textContent = message.error; parent.postMessage({ pluginMessage: { type: 'init' } }, '*'); }
+    if (message.type === 'focus-result') {
+      const field = document.getElementById('quality-focus-status');
+      if (field) field.textContent = message.error || 'Слой выделен в Figma.';
+      return;
+    }
+    if (message.type === 'policy-error') { journal('POLICY_ERROR', message.error); important('policy', 'warning', 'Проверьте тариф', 'Не удалось изменить настройку тарифа. Подробности ниже.'); pageBudget.textContent = message.error; parent.postMessage({ pluginMessage: { type: 'init' } }, '*'); }
     if (message.type === 'result' && activeRequest && message.id === activeRequest) {
       const durationMs = Date.now() - activeStartedAt;
       const delivered = responseSocket?.readyState === WebSocket.OPEN;
@@ -279,13 +474,19 @@
         if (lateResults.length > 32) lateResults.shift();
       }
       if (responseSocket?.readyState === WebSocket.OPEN) responseSocket.send(JSON.stringify(message));
+      if (!message.error) { try { showQuality(activeCommand, message.result); } catch { journal('QUALITY_UI_ERROR'); } }
+      else if (document.getElementById('quality-action') && ['audit_design', 'apply_changes', 'preview_audit_fixes', 'preview_design_fixes'].includes(activeCommand))
+        document.getElementById('quality-action').textContent = 'Операция не завершилась успешно. Результат исправления не подтверждён; проверьте слои.';
       activeRequest = undefined;
       activeCommand = undefined;
+      activeArgs = undefined;
       filePlan.disabled = false;
       responseSocket = undefined;
       lastErrorCode = message.error ? 'PLUGIN_ERROR' : undefined;
       if (message.error && recovery) recovery.textContent = 'Проверьте затронутые слои и get_operation. Не повторяйте создание автоматически; при частичном изменении используйте Undo в Figma.';
       activity.textContent = message.error ? 'Ошибка: ' + message.error : 'Операция завершена';
+      if (message.error) important('operation-error', 'error', 'Ошибка · подробности', 'Операция завершилась с ошибкой. Проверьте затронутые слои и журнал перед повтором.');
+      renderIndicator();
       if (socket?.readyState === WebSocket.CLOSED) scheduleReconnect();
     }
   };
