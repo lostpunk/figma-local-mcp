@@ -27095,7 +27095,7 @@ function createOperations({ maxEntries = 100, maxBytes = 16 * 1024 * 1024 } = {}
 // package.json
 var package_default = {
   name: "figma-local-mcp",
-  version: "0.7.17",
+  version: "0.7.18",
   private: true,
   type: "module",
   engines: {

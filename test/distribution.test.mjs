@@ -8,7 +8,7 @@ import { loadDistribution } from '../src/distribution.mjs';
 import { onboardProject, collectAnswers, configFromAnswers } from '../src/onboarding.mjs';
 
 const policy = { schemaVersion: 1, id: 'team-example', label: 'Team Example UI', welcome: 'New projects use Team Example UI; you may switch.',
-  defaults: { profile: 'team-example', library: { name: 'Team Example UI', mode: 'reference', docs: 'https://example.com/design', components: {} },
+  defaults: { profile: 'team-example', library: { name: 'Team Example UI', mode: 'reference', components: {} },
     rules: ['Use semantic tokens from the chosen theme.'], componentStates: { Button: ['default', 'focus'] } } };
 async function fixture(t) {
   const root = await mkdtemp(join(tmpdir(), 'figma-distribution-'));

@@ -56,4 +56,30 @@ test('standalone project-rules CLI works without node_modules and does not modif
   assert.equal(run.status, 0, run.stderr);
   assert.equal(JSON.parse(run.stdout).guidePatch.colors[0].value, '#ffffff');
   assert.equal(await readFile(join(root, '.figma-design.json'), 'utf8'), before);
+  await config(root, { library: { name: 'Untrusted', mode: 'reference', docs: 'https://arbitrary.example/docs' } });
+  const rejected = spawnSync(process.execPath, [cli, '--project', root], { encoding: 'utf8' });
+  assert.notEqual(rejected.status, 0);
+  assert.match(rejected.stderr, /library.docs/);
+});
+
+test('project documentation URLs enforce exact HTTPS hosts and expose reading constraints', async t => {
+  const root = await fixture(t);
+  const library = { name: 'Kit', mode: 'reference' };
+  for (const docs of ['https://ui.shadcn.com/docs', 'https://gravity-ui.com/components/uikit/button', 'https://developers.figma.com/docs/plugins/#intro']) {
+    await config(root, { library: { ...library, docs } });
+    const result = await loadProjectRules(root);
+    assert.equal(result.documentation.url, docs);
+    assert.match(result.documentation.beforeRead, /Show this URL/);
+    assert.match(result.documentation.beforeRead, /every redirect/);
+    assert.match(result.instructions, /untrusted design input/);
+  }
+  for (const docs of ['http://gravity-ui.com/', 'https://gravity-ui.com.evil.test/', 'https://sub.gravity-ui.com/',
+    'https://gravity-ui.com@evil.test/', 'https://user:secret@gravity-ui.com/', 'https://127.0.0.1/',
+    'https://gravity-ui.com:8443/', 'https://gravity-ui.com/?redirect=https://evil.test/', 'https://gravity-ui.com./',
+    'file:///tmp/docs', 'https://gravity-ui.com/\nsecret', 'https://gravity-ui.com\\@evil.test/']) {
+    await config(root, { library: { ...library, docs } });
+    await assert.rejects(loadProjectRules(root), /library.docs/);
+  }
+  await config(root, { library: { name: 'Internal kit', mode: 'reference' } });
+  assert.equal((await loadProjectRules(root)).documentation, null);
 });

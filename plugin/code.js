@@ -1525,7 +1525,7 @@
     figma.ui.postMessage({ type: "document", document: {
       name: figma.root.name,
       page: figma.currentPage.name,
-      pluginVersion: "0.7.17",
+      pluginVersion: "0.7.18",
       capabilities: getCapabilities()
     } });
   }
