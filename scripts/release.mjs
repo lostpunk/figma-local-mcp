@@ -3,8 +3,7 @@ import { mkdir, open, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
-import { normalizeStoreFile, packageStore } from './package-skillstore.mjs';
-import { hash, readManifest, skillPrefix, treeFiles, verifyFiles } from './release-files.mjs';
+import { readManifest, verifyFiles } from './release-files.mjs';
 import { updateLocal } from './update-local.mjs';
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -51,24 +50,13 @@ async function main() {
     run(process.execPath, ['--test', ...tests]);
     if (pack('--fingerprint') !== fingerprint) throw new Error('Sources changed during tests. Run release again.');
     pack();
-    await packageStore();
     const manifest = await readManifest(root);
-    const store = join(root, 'dist/skillstore/figma-local-design');
-    const names = Object.keys(manifest.files).filter(name => name.startsWith(skillPrefix)).map(name => name.slice(skillPrefix.length)).sort();
-    if (JSON.stringify((await treeFiles(store)).sort()) !== JSON.stringify(names)) throw new Error('Unexpected files in catalog package');
-    manifest.catalogFiles = {};
-    for (const name of names) {
-      const expected = normalizeStoreFile(name, await readFile(join(root, skillPrefix, name)));
-      const actual = await readFile(join(store, name));
-      if (!actual.equals(expected)) throw new Error(`Catalog content mismatch: ${name}`);
-      manifest.catalogFiles[name] = hash(actual);
-    }
     pack('--verify');
     await verifyFiles(root, manifest.files);
     if (pack('--fingerprint') !== fingerprint) throw new Error('Sources changed during packaging. Run release again.');
     await writeFile(join(root, 'dist', `release-${version}.json`), JSON.stringify(manifest, null, 2) + '\n');
     const report = install ? await updateLocal({ source: root, codexHome }) : { version, published: false };
-    Object.assign(report, { tests: 'passed', archives: 'verified', catalog: 'verified' });
+    Object.assign(report, { tests: 'passed', archives: 'verified' });
     await writeFile(join(root, 'artifacts', `validation-${version}.json`), JSON.stringify(report, null, 2) + '\n');
     console.log(JSON.stringify(report, null, 2));
     if (install) console.log('Restart Codex and Figma Local MCP Auto to load the new runtime and plugin.');

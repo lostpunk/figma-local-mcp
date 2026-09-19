@@ -27283,7 +27283,7 @@ function createOperations({ maxEntries = 100, maxBytes = 16 * 1024 * 1024, histo
 // package.json
 var package_default = {
   name: "figma-local-mcp",
-  version: "0.7.26",
+  version: "0.7.28",
   private: true,
   type: "module",
   engines: {
@@ -27294,7 +27294,6 @@ var package_default = {
     start: "node src/server.mjs",
     test: "npm run build && node --test test/*.test.mjs",
     setup: "node scripts/setup.mjs",
-    "pack:skillstore": "npm run build && node scripts/package-skillstore.mjs",
     release: "node scripts/release.mjs",
     "release:local": "node scripts/release.mjs --install-local"
   },

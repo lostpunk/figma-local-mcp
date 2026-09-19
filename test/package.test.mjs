@@ -9,12 +9,12 @@ import { fileURLToPath } from 'node:url';
 const source = fileURLToPath(new URL('../', import.meta.url));
 const ignoredDirectories = new Set(['.git', 'dist', 'generated', 'node_modules', 'artifacts', 'backups', 'private-distributions']);
 
-test('portable archives exclude local SkillStore metadata', async t => {
+test('portable archives exclude local distribution metadata', async t => {
   const directory = await mkdtemp(join(tmpdir(), 'figma-package-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const root = join(directory, 'figma-local-mcp');
   await cp(source, root, { recursive: true, filter: path => !ignoredDirectories.has(basename(path)) });
-  await writeFile(join(root, 'skills/figma-local-design/.skillstore-meta.json'), '{"local":true}\n');
+  await writeFile(join(root, 'skills/figma-local-design/.channel-meta.json'), '{"local":true}\n');
   await mkdir(join(root, 'generated/operation-history'), { recursive: true });
   await writeFile(join(root, 'generated/operation-history/port-3055.enc'), 'private-history-sentinel');
 
@@ -30,7 +30,7 @@ test('portable archives exclude local SkillStore metadata', async t => {
   assert.ok(entries.includes('figma-local-mcp/skills/figma-local-design/plugin/code.js'));
   assert.ok(entries.includes('figma-local-mcp/skills/figma-local-design/scripts/setup.mjs'));
   assert.ok(!entries.some(entry => entry.endsWith('/runtime-payload.json.gz') || entry.endsWith('/runtime-release.json')));
-  assert.ok(!entries.some(entry => entry.endsWith('/.skillstore-meta.json') || entry.endsWith('/installation.json')));
+  assert.ok(!entries.some(entry => entry.endsWith('/.channel-meta.json') || entry.endsWith('/installation.json')));
   assert.ok(!entries.some(entry => entry.includes('/generated/') || entry.endsWith('.enc')));
   assert.ok(entries.includes('figma-local-mcp/skills/figma-local-design/assets/distribution.json'));
   assert.ok(entries.includes('figma-local-mcp/skills/figma-local-design/references/gravity-ui.md'));
@@ -61,16 +61,4 @@ test('portable archives exclude local SkillStore metadata', async t => {
   const incomplete = spawnSync('python3', [join(root, 'scripts/package.py')], { cwd: root, encoding: 'utf8' });
   assert.notEqual(incomplete.status, 0);
   assert.match(incomplete.stderr, /missing runnable Figma integration files/);
-});
-
-test('SkillStore package removes deep external references from generated files only', async t => {
-  const packaged = spawnSync(process.execPath, [join(source, 'scripts/package-skillstore.mjs')], { cwd: source, encoding: 'utf8' });
-  assert.equal(packaged.status, 0, packaged.stderr);
-  const output = join(source, 'dist/skillstore/figma-local-design');
-  const runtime = await readFile(join(output, 'runtime/server.mjs'), 'utf8');
-  const notices = await readFile(join(output, 'runtime/THIRD_PARTY_NOTICES.md'), 'utf8');
-  const deepExternalReference = /https?:\/\/[^\s<>()\[\]{}]+(?:\/(?:blob|commit)\/|#[^\s<>()\[\]{}]+)/;
-  assert.doesNotMatch(runtime, deepExternalReference);
-  assert.doesNotMatch(notices, deepExternalReference);
-  assert.match(runtime, /createBridge/);
 });

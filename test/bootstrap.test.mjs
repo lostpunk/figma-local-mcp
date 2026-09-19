@@ -139,7 +139,7 @@ test('standalone check detects drift, update repairs same-version files and pres
   assert.equal(run('--target', f.target).status, 0);
   const locator = join(f.skillRoot, 'installation.json');
   await writeFile(locator, JSON.stringify({ packageRoot: f.target, custom: 'preserved' }));
-  await writeFile(join(f.skillRoot, '.skillstore-meta.json'), '{"version":6}');
+  await writeFile(join(f.skillRoot, '.channel-meta.json'), '{"version":6}');
   assert.equal(run('--check').status, 0);
   await writeFile(join(f.target, 'runtime/server.mjs'), '// stale runtime');
   const checked = run('--check'); assert.notEqual(checked.status, 0); assert.match(checked.stderr, /differs/);
@@ -147,7 +147,7 @@ test('standalone check detects drift, update repairs same-version files and pres
   const updated = run('--update'); assert.equal(updated.status, 0, updated.stderr);
   assert.match(updated.stdout, /restart_required/);
   assert.equal(JSON.parse(await readFile(locator)).custom, 'preserved');
-  assert.equal(await readFile(join(f.skillRoot, '.skillstore-meta.json'), 'utf8'), '{"version":6}');
+  assert.equal(await readFile(join(f.skillRoot, '.channel-meta.json'), 'utf8'), '{"version":6}');
   assert.equal(run('--check').status, 0);
 });
 

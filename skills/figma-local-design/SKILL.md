@@ -21,10 +21,10 @@ Work through the locally connected Figma plugin. This skill provides design deci
 - Previewing text-height, fixed Auto Layout, project binding and other supported property edits on existing layers: [preview-changes.md](references/preview-changes.md).
 - Selecting rules, a UI library or a Figma kit: [project-rules.md](references/project-rules.md). Load only the selected profile. The default reference for new web projects is [gravity-ui.md](references/gravity-ui.md). The optional shadcn/ui reference is [shadcn-ui.md](references/shadcn-ui.md); use it when selected.
 - Changing the server, plugin or skill: [maintaining.md](references/maintaining.md).
-- Preparing or publishing this skill to SkillStore: [skillstore.md](references/skillstore.md).
 - File plan and page budget: [file-limits.md](references/file-limits.md).
 
 ## Working contract
+
 
 For design-to-code tasks, follow design-to-code.md before the design-creation workflow. Read the Figma source and the target codebase, then implement within the requested scope. Figma stays read-only unless a design edit is also requested. Existing source design and repository conventions take priority over starter profiles; do not create or synchronize a style guide merely to implement a screen. An analysis-only request ends with findings, not unsolicited code changes.
 

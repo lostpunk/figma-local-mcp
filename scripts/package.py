@@ -23,7 +23,7 @@ DIRECTORIES = LAYOUT['runtime']['directories'] + LAYOUT['source']['directories']
 SKILL_ROOT = ROOT / 'skills' / 'figma-local-design'
 SKILL_FILES = LAYOUT['runtime']['files'] + LAYOUT['skill']['files']
 SKILL_DIRECTORIES = LAYOUT['runtime']['directories'] + LAYOUT['skill']['directories']
-FORBIDDEN_SKILL_PARTS = {'.github', '.git', '.skillstore-meta.json', 'installation.json',
+FORBIDDEN_SKILL_PARTS = {'.github', '.git', 'installation.json',
                          'distribution-profile.md', 'private-distributions'}
 PRIVATE_PARTS = {'generated', '.env', '.skill-install.json', 'pairing-key.json', 'asset-access.json', '.figma-design.json'}
 
@@ -38,7 +38,7 @@ def skill_inputs():
                 inputs.append(path)
     for path in inputs:
         relative = path.relative_to(SKILL_ROOT)
-        if path.is_symlink() or any(part in FORBIDDEN_SKILL_PARTS for part in relative.parts):
+        if path.is_symlink() or any(part in FORBIDDEN_SKILL_PARTS or (part.startswith('.') and part.endswith('-meta.json')) for part in relative.parts):
             raise ValueError(f'Forbidden or symlinked skill input: {relative}')
     return inputs
 
@@ -150,16 +150,6 @@ def verify():
                     raise ValueError(f'Archive content mismatch: {entry}')
                 if archive.getinfo(entry).external_attr >> 16 != 0o100644:
                     raise ValueError(f'Unexpected archive permissions: {entry}')
-    if 'catalogFiles' in manifest:
-        catalog = ROOT / 'dist' / 'skillstore' / 'figma-local-design'
-        actual = {}
-        for path in catalog.rglob('*'):
-            if path.is_symlink():
-                raise ValueError('Symlink in catalog package')
-            if path.is_file():
-                actual[path.relative_to(catalog).as_posix()] = digest(path.read_bytes())
-        if actual != manifest['catalogFiles']:
-            raise ValueError('Catalog files do not match release manifest')
     print(f'Release {VERSION}: archives, checksums and source inventory verified')
 
 

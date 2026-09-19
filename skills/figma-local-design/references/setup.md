@@ -1,5 +1,6 @@
 # Setup and distribution
 
+
 ## Install directly from this skill
 
 The skill contains `scripts/install.mjs` plus inspectable `runtime/`, `plugin/`, `src/` and setup sources. The user can distribute only this skill folder or its skill ZIP. A new machine does not need the original project folder.
@@ -18,7 +19,7 @@ If runtime replacement fails, a successful rollback is reported explicitly. If r
 
 First-time design setup: pass `--project PATH` for the user's design project. A terminal gets a choice wizard; agent/non-interactive execution gets questions to ask in chat. `--design-answers FILE` saves previously collected answers; `--non-interactive` always returns structured questions rather than waiting on stdin. Existing project choices are preserved. See [onboarding.md](onboarding.md). If project setup fails after runtime installation, report these states separately and rerun only onboarding.mjs after correcting the project input.
 
-The installer intentionally has no remote-code download mode. Install a reviewed skill ZIP or a trusted checkout so the runtime sources remain visible to both the user and SkillStore checks.
+The installer intentionally has no remote-code download mode. Install a reviewed skill ZIP or a trusted checkout so the runtime sources remain visible to recipients and code reviewers.
 
 ## Full package installation
 

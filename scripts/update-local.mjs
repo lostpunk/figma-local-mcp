@@ -1,4 +1,4 @@
-import { cp, lstat, mkdir, mkdtemp, open, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { cp, lstat, mkdir, mkdtemp, open, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { createFileTransaction } from '../src/install-files.mjs';
 import { prepareLocalPlugin } from './local-plugin.mjs';
@@ -9,6 +9,16 @@ async function optionalRead(path) {
   try { return await readFile(path); } catch (error) { if (error.code === 'ENOENT') return null; throw error; }
 }
 async function digest(path) { const bytes = await optionalRead(path); return bytes === null ? null : hash(bytes); }
+async function distributionMetadata(directory) {
+  const result = {};
+  for (const name of (await readdir(directory)).sort()) {
+    if (!/^\.[a-zA-Z0-9_-]+-meta\.json$/.test(name)) continue;
+    const info = await lstat(join(directory, name));
+    if (!info.isFile() || info.isSymbolicLink()) throw new Error('Invalid distribution metadata');
+    result[name] = await digest(join(directory, name));
+  }
+  return result;
+}
 async function realDirectory(path) {
   if (!(await lstat(path)).isDirectory() || (await lstat(path)).isSymbolicLink()) throw new Error(`Not a real directory: ${path}`);
 }
@@ -48,7 +58,7 @@ export async function updateLocal({ source, codexHome, verify = verifyInstallati
     const before = await Promise.all(preservedNames.map(name => digest(join(runtime, name))));
     if (before[0] === null) throw new Error('Existing installation has no pairing key; repair it before updating');
     const configurationBefore = await digest(join(codexHome, 'config.toml'));
-    const metadataBefore = await digest(join(skill, '.skillstore-meta.json'));
+    const metadataBefore = await distributionMetadata(skill);
     const locatorBefore = await digest(join(skill, 'installation.json'));
     stage = await mkdtemp(join(codexHome, '.figma-update-'));
     const stagedRuntime = join(stage, 'runtime'), stagedSkill = join(stage, 'skill');
@@ -56,8 +66,9 @@ export async function updateLocal({ source, codexHome, verify = verifyInstallati
     await copyFiles(join(source, skillPrefix), stagedSkill, skillFiles);
     await treeFiles(join(runtime, 'generated')); // Reject symlinks before copying private local state.
     await cp(join(runtime, 'generated'), join(stagedRuntime, 'generated'), { recursive: true });
-    const metadata = await optionalRead(join(skill, '.skillstore-meta.json'));
-    if (metadata !== null) await writeFile(join(stagedSkill, '.skillstore-meta.json'), metadata, { mode: 0o600 });
+    for (const name of Object.keys(metadataBefore)) {
+      await writeFile(join(stagedSkill, name), await readFile(join(skill, name)), { mode: 0o600 });
+    }
     await writeFile(join(stagedSkill, 'installation.json'), JSON.stringify({ ...locator, packageRoot: runtime }, null, 2) + '\n', { mode: 0o600 });
     await writeFile(join(stagedRuntime, '.skill-install.json'), JSON.stringify({ format: 'figma-local-install-v2', version: manifest.version }) + '\n', { mode: 0o600 });
     await prepareLocalPlugin(stagedRuntime);
@@ -69,7 +80,8 @@ export async function updateLocal({ source, codexHome, verify = verifyInstallati
     for (let index = 0; index < preservedNames.length; index++) {
       if (await digest(join(runtime, preservedNames[index])) !== before[index] || await digest(join(stagedRuntime, preservedNames[index])) !== before[index]) throw new Error('Private installation state changed during staging');
     }
-    if (configurationBefore !== await digest(join(codexHome, 'config.toml')) || metadataBefore !== await digest(join(skill, '.skillstore-meta.json'))
+    if (configurationBefore !== await digest(join(codexHome, 'config.toml')) || JSON.stringify(metadataBefore) !== JSON.stringify(await distributionMetadata(skill))
+      || JSON.stringify(metadataBefore) !== JSON.stringify(await distributionMetadata(stagedSkill))
       || locatorBefore !== await digest(join(skill, 'installation.json'))) throw new Error('Installation settings changed during staging; retry');
     await mkdir(join(codexHome, 'backups'), { recursive: true, mode: 0o700 });
     await realDirectory(join(codexHome, 'backups'));

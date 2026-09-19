@@ -27,23 +27,34 @@ async function fixture(t) {
   await put(join(source, 'dist/release-0.1.0.json'), JSON.stringify({ format: 1, version: '0.1.0', artifacts: [], files: Object.fromEntries(Object.entries(files).map(([name, value]) => [name, hash(value)])) }));
   for (const [name, value] of Object.entries({ 'package.json': pkg, '.skill-install.json': '{"format":"figma-local-install-v2","version":"0.1.0"}', 'runtime/server.mjs': '// old runtime',
     'generated/pairing-key.json': JSON.stringify({ token: 'a'.repeat(64) }), 'generated/asset-access.json': '{"version":1,"allowedRoots":[]}' })) await put(join(runtime, name), value);
-  for (const [name, value] of Object.entries({ 'package.json': pkg, 'SKILL.md': 'old skill', 'installation.json': JSON.stringify({ packageRoot: runtime, customSetting: 'preserve me' }), '.skillstore-meta.json': '{"version":6}' })) await put(join(skill, name), value);
+  for (const [name, value] of Object.entries({ 'package.json': pkg, 'SKILL.md': 'old skill', 'installation.json': JSON.stringify({ packageRoot: runtime, customSetting: 'preserve me' }), '.channel-meta.json': '{"version":6}' })) await put(join(skill, name), value);
   await put(join(home, 'config.toml'), '# unchanged configuration');
   return { source, home, runtime, skill, put, options: { source, codexHome: home, verify: async () => ({ testVerification: true }) } };
 }
 
 test('local update deploys changed bytes at the same version and preserves state and backups', async t => {
   const f = await fixture(t);
+  await f.put(join(f.skill, '.second-meta.json'), '{"channel":"another"}');
   const result = await updateLocal(f.options);
   assert.equal(await readFile(join(f.runtime, 'runtime/server.mjs'), 'utf8'), '// new runtime');
   assert.equal(await readFile(join(f.skill, 'SKILL.md'), 'utf8'), 'new skill');
   assert.equal(await readFile(join(result.runtimeBackup, 'runtime/server.mjs'), 'utf8'), '// old runtime');
   assert.equal(await readFile(join(result.skillBackup, 'SKILL.md'), 'utf8'), 'old skill');
   for (const path of ['generated/pairing-key.json', 'generated/asset-access.json']) assert.deepEqual(await readFile(join(f.runtime, path)), await readFile(join(result.runtimeBackup, path)));
-  assert.deepEqual(await readFile(join(f.skill, '.skillstore-meta.json')), await readFile(join(result.skillBackup, '.skillstore-meta.json')));
+  assert.deepEqual(await readFile(join(f.skill, '.channel-meta.json')), await readFile(join(result.skillBackup, '.channel-meta.json')));
+  assert.equal(await readFile(join(f.skill, '.second-meta.json'), 'utf8'), '{"channel":"another"}');
   assert.equal(JSON.parse(await readFile(join(f.skill, 'installation.json'), 'utf8')).customSetting, 'preserve me');
   assert.equal(await readFile(join(f.home, 'config.toml'), 'utf8'), '# unchanged configuration');
   assert.equal(result.liveFigmaVerification, 'pending_restart');
+});
+
+test('a new distribution metadata file during verification cancels the update', async t => {
+  const f = await fixture(t);
+  await assert.rejects(updateLocal({ ...f.options, verify: async () => {
+    await f.put(join(f.skill, '.new-meta.json'), '{"keep":true}'); return {};
+  } }), /settings changed/);
+  assert.equal(await readFile(join(f.skill, '.new-meta.json'), 'utf8'), '{"keep":true}');
+  assert.equal(await readFile(join(f.skill, 'SKILL.md'), 'utf8'), 'old skill');
 });
 
 test('staging verification failure leaves both installed copies unchanged', async t => {

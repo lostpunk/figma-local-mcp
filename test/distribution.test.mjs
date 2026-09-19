@@ -74,7 +74,7 @@ test('standalone CLI resolves only its own package policy, never cwd or installa
   }
   await mkdir(join(teamRoot, 'assets'));
   await writeFile(join(teamRoot, 'assets/distribution.json'), JSON.stringify(policy));
-  await writeFile(join(publicRoot, '.skillstore-meta.json'), '{}');
+  await writeFile(join(publicRoot, '.channel-meta.json'), '{}');
   const run = (dir, ...args) => {
     const result = spawnSync(process.execPath, [join(dir, 'scripts/onboarding.mjs'), '--project', project, ...args], { cwd: teamRoot, encoding: 'utf8' });
     assert.equal(result.status, 0, result.stderr); return JSON.parse(result.stdout);
@@ -88,40 +88,4 @@ test('standalone CLI resolves only its own package policy, never cwd or installa
   const validator = spawnSync(process.execPath, [resolve('skills/figma-local-design/scripts/project-rules.mjs'), '--project', project], { encoding: 'utf8' });
   assert.equal(validator.status, 0, validator.stderr);
   assert.deepEqual(JSON.parse(validator.stdout).config.rules, policy.defaults.rules);
-});
-
-test('all package channels keep identical design behavior without a private overlay', async t => {
-  const root = await fixture(t);
-  for (const name of ['scripts', 'skills', 'src']) await cp(name, join(root, name), { recursive: true });
-  const built = spawnSync(process.execPath, [join(root, 'scripts/package-skillstore.mjs')], { encoding: 'utf8' });
-  assert.equal(built.status, 0, built.stderr);
-  const canonical = join(root, 'skills/figma-local-design');
-  const target = join(root, 'dist/skillstore/figma-local-design');
-  const publicPolicy = await loadDistribution(canonical);
-  assert.equal(publicPolicy.defaults.library.name, 'Gravity UI');
-  assert.deepEqual(await loadDistribution(target), publicPolicy);
-  for (const name of ['SKILL.md', 'version.json', 'references/gravity-ui.md', 'assets/distribution.json', 'scripts/install.mjs']) {
-    assert.equal(await readFile(join(target, name), 'utf8'), await readFile(join(canonical, name), 'utf8'));
-  }
-  const project = join(root, 'project'); await mkdir(project);
-  const results = [canonical, target].map(dir => {
-    const result = spawnSync(process.execPath, [join(dir, 'scripts/onboarding.mjs'), '--project', project, '--non-interactive'], { encoding: 'utf8' });
-    assert.equal(result.status, 0, result.stderr); return JSON.parse(result.stdout);
-  });
-  assert.deepEqual(results[0], results[1]);
-  assert.equal(results[0].welcome, publicPolicy.welcome);
-  const answers = join(root, 'answers.json');
-  await writeFile(answers, JSON.stringify({ designSystem: 'distribution' }));
-  const configs = [];
-  for (const dir of [canonical, target]) {
-    const selectedProject = await fixture(t);
-    const result = spawnSync(process.execPath, [join(dir, 'scripts/onboarding.mjs'), '--project', selectedProject, '--answers', answers], { encoding: 'utf8' });
-    assert.equal(result.status, 0, result.stderr);
-    const config = JSON.parse(result.stdout).config;
-    assert.equal(config.library.name, 'Gravity UI');
-    // The project name intentionally differs; all actual design rules are equal.
-    delete config.foundation.name;
-    configs.push(config);
-  }
-  assert.deepEqual(configs[0], configs[1]);
 });

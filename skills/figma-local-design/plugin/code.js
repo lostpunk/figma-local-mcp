@@ -2511,7 +2511,7 @@
     figma.ui.postMessage({ type: "document", document: {
       name: figma.root.name,
       page: figma.currentPage.name,
-      pluginVersion: "0.7.26",
+      pluginVersion: "0.7.28",
       capabilities: getCapabilities()
     } });
   }

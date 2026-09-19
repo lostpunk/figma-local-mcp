@@ -7,7 +7,7 @@ __pycache__/
 .env.*
 *.auth
 .skill-install.json
-skills/**/.skillstore-meta.json
+skills/**/.*-meta.json
 skills/**/installation.json
 
 artifacts/
