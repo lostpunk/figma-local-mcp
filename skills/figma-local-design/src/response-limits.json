@@ -1,0 +1,7 @@
+{
+  "defaultReadBytes": 1048576,
+  "minReadBytes": 4096,
+  "maxReadBytes": 4194304,
+  "maxResultBytes": 12582912,
+  "transportBytes": 16777216
+}

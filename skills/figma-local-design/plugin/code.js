@@ -265,6 +265,47 @@
     }
   }
 
+  // plugin/node-placement.ts
+  var identity = [[1, 0, 0], [0, 1, 0]];
+  function worldTransform(node) {
+    const matrix = node.type === "PAGE" ? identity : node.absoluteTransform;
+    if (!matrix || matrix.some((row) => row.some((value) => !Number.isFinite(value)))) throw new Error("Invalid node transform");
+    return matrix.map((row) => [...row]);
+  }
+  function localTransform(parent, world) {
+    const [[a, c, x], [b, d, y]] = worldTransform(parent);
+    const determinant = a * d - b * c;
+    if (Math.abs(determinant) < 1e-10) throw new Error("Destination transform is not invertible");
+    const [[e, g, u], [f, h, v]] = world;
+    return [
+      [(d * e - c * f) / determinant, (d * g - c * h) / determinant, (d * (u - x) - c * (v - y)) / determinant],
+      [(a * f - b * e) / determinant, (a * h - b * g) / determinant, (a * (v - y) - b * (u - x)) / determinant]
+    ];
+  }
+  function verifyWorldTransform(node, expected) {
+    const actual = worldTransform(node);
+    if (actual.some((row, r) => row.some((value, c) => Math.abs(value - expected[r][c]) > (c === 2 ? 0.01 : 1e-5)))) {
+      throw new Error("Destination geometry changed; absolute transform could not be preserved");
+    }
+  }
+  function placeNodes(parent, nodes, requestedIndex) {
+    const selected = new Set(nodes.map((node) => node.id));
+    const remaining = parent.children.filter((node) => !selected.has(node.id));
+    const index = Math.min(requestedIndex != null ? requestedIndex : remaining.length, remaining.length);
+    const desired = [...remaining.slice(0, index), ...nodes, ...remaining.slice(index)];
+    const current = parent.children;
+    if (current.length === desired.length && current.every((node, i) => node.id === desired[i].id)) return index;
+    for (const node of nodes) parent.appendChild(node);
+    if (index < remaining.length) {
+      for (let i = 0; i < nodes.length; i++) parent.insertChild(index + i, nodes[i]);
+    }
+    const actual = parent.children;
+    if (actual.length !== desired.length || actual.some((node, i) => node.id !== desired[i].id)) {
+      throw new Error("Layer order verification failed");
+    }
+    return index;
+  }
+
   // plugin/design-system.ts
   var designCommands = /* @__PURE__ */ new Set(["create_style_guide", "sync_style_guide", "get_design_system", "create_page", "create_scene", "create_instance", "set_variable"]);
   var rgb2 = (hex) => ({
@@ -272,6 +313,15 @@
     g: parseInt(hex.slice(3, 5), 16) / 255,
     b: parseInt(hex.slice(5, 7), 16) / 255
   });
+  function resourceRevision(value) {
+    const text = JSON.stringify(value);
+    let a = 2166136261, b = 5381;
+    for (let i = 0; i < text.length; i++) {
+      a = Math.imul(a ^ text.charCodeAt(i), 16777619);
+      b = Math.imul(b, 33) ^ text.charCodeAt(i);
+    }
+    return `${(a >>> 0).toString(16)}-${(b >>> 0).toString(16)}`;
+  }
   async function createGuide(args, helpers) {
     const previousPage = figma.currentPage;
     const specifiedPage = args.pageId ? await helpers.getNode(args.pageId) : void 0;
@@ -468,7 +518,7 @@
     }
   }
   async function executeDesignCommand(command, args, helpers) {
-    var _a, _b, _c, _d, _e, _f;
+    var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j;
     switch (command) {
       case "create_style_guide":
         return createGuide(args, helpers);
@@ -476,16 +526,39 @@
         return syncGuide(args);
       case "get_design_system": {
         const collections = await figma.variables.getLocalVariableCollectionsAsync();
-        const selected = collections.filter((c) => c.name.startsWith(args.prefix));
+        const selected = collections.filter((c) => {
+          var _a2;
+          return c.name.startsWith((_a2 = args.prefix) != null ? _a2 : "") && (!args.collectionId || c.id === args.collectionId);
+        });
         const ids = new Set(selected.map((c) => c.id));
-        const variables = (await figma.variables.getLocalVariablesAsync()).filter((v) => ids.has(v.variableCollectionId));
-        const styles = (await figma.getLocalTextStylesAsync()).filter((s) => s.name.startsWith(args.prefix));
-        return {
-          collections: selected.slice(0, args.limit).map((c) => ({ id: c.id, name: c.name, modes: c.modes, defaultModeId: c.defaultModeId })),
-          variables: variables.slice(0, args.limit).map((v) => ({ id: v.id, name: v.name, type: v.resolvedType, collectionId: v.variableCollectionId, valuesByMode: v.valuesByMode })),
-          textStyles: styles.slice(0, args.limit).map((s) => ({ id: s.id, name: s.name, fontName: s.fontName, fontSize: s.fontSize, lineHeight: s.lineHeight })),
-          truncated: selected.length > args.limit || variables.length > args.limit || styles.length > args.limit
+        const variables = (await figma.variables.getLocalVariablesAsync()).filter((v) => {
+          var _a2;
+          return ids.has(v.variableCollectionId) && v.name.startsWith((_a2 = args.variableNamePrefix) != null ? _a2 : "");
+        });
+        const styles = (await figma.getLocalTextStylesAsync()).filter((s) => {
+          var _a2;
+          return s.name.startsWith((_a2 = args.prefix) != null ? _a2 : "");
+        });
+        const resources = {
+          collections: selected.map((c) => ({ id: c.id, name: c.name, modes: c.modes, defaultModeId: c.defaultModeId })),
+          variables: variables.map((v) => ({ id: v.id, name: v.name, type: v.resolvedType, collectionId: v.variableCollectionId, valuesByMode: v.valuesByMode })),
+          textStyles: styles.map((s) => ({ id: s.id, name: s.name, fontName: s.fontName, fontSize: s.fontSize, lineHeight: s.lineHeight }))
         };
+        for (const list of Object.values(resources)) list.sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+        const revision = resourceRevision([(_a = args.prefix) != null ? _a : "", (_b = args.collectionId) != null ? _b : "", (_c = args.variableNamePrefix) != null ? _c : "", resources]);
+        const offsets = (_d = args.offsets) != null ? _d : {};
+        if (Object.values(offsets).some((value) => Number(value) > 0) && !args.revision) throw new Error("PAGINATION_REVISION_REQUIRED: Supply revision from the first get_design_system response.");
+        if (args.revision && args.revision !== revision) throw new Error("DESIGN_SYSTEM_CHANGED: Resources or filters changed. Restart pagination without offsets/revision.");
+        const result2 = { revision, pagination: {}, truncated: false };
+        for (const key of ["collections", "variables", "textStyles"]) {
+          const list = resources[key];
+          const offset = Math.min((_e = offsets[key]) != null ? _e : 0, list.length);
+          result2[key] = list.slice(offset, offset + ((_f = args.limit) != null ? _f : 200));
+          const next = offset + result2[key].length;
+          result2.pagination[key] = { offset, total: list.length, nextOffset: next < list.length ? next : null };
+          result2.truncated || (result2.truncated = next < list.length);
+        }
+        return result2;
       }
       case "create_page": {
         const matches = figma.root.children.filter((p) => p.name === args.name);
@@ -496,7 +569,7 @@
         return { id: page.id, name: page.name, reused: false, capabilities: getCapabilities() };
       }
       case "create_scene": {
-        const rootParentId = (_a = args.parentId) != null ? _a : figma.currentPage.id;
+        const rootParentId = (_g = args.parentId) != null ? _g : figma.currentPage.id;
         const refs = /* @__PURE__ */ new Map();
         const repaired = [];
         try {
@@ -509,18 +582,18 @@
           for (const spec of args.nodes) {
             const node = refs.get(spec.ref);
             const expectedId = spec.parentRef ? refs.get(spec.parentRef).id : rootParentId;
-            if (((_b = node.parent) == null ? void 0 : _b.id) === expectedId) continue;
+            if (((_h = node.parent) == null ? void 0 : _h.id) === expectedId) continue;
             const expected = await helpers.getNode(expectedId);
             if (!["PAGE", "FRAME", "COMPONENT", "SECTION"].includes(expected.type)) throw new Error(`Invalid expected parent for ${spec.ref}`);
             if (expected.type !== "PAGE" && expected.layoutMode !== "NONE") {
               throw new Error(`Hierarchy verification failed for ${spec.ref}: destination uses auto layout`);
             }
-            const bounds = (_c = node.absoluteBoundingBox) != null ? _c : { x: node.x, y: node.y };
-            const parentBounds = expected.type === "PAGE" ? { x: 0, y: 0 } : (_d = expected.absoluteBoundingBox) != null ? _d : { x: 0, y: 0 };
+            const world = worldTransform(node);
+            localTransform(expected, world);
             expected.appendChild(node);
-            node.x = bounds.x - parentBounds.x;
-            node.y = bounds.y - parentBounds.y;
-            if (((_e = node.parent) == null ? void 0 : _e.id) !== expectedId) throw new Error(`Hierarchy recovery failed for ${spec.ref}`);
+            node.relativeTransform = localTransform(expected, world);
+            verifyWorldTransform(node, world);
+            if (((_i = node.parent) == null ? void 0 : _i.id) !== expectedId) throw new Error(`Hierarchy recovery failed for ${spec.ref}`);
             repaired.push(spec.ref);
           }
           figma.commitUndo();
@@ -563,7 +636,7 @@
         if (!variable || variable.remote) throw new Error("Local variable not found");
         const collection = (await figma.variables.getLocalVariableCollectionsAsync()).find((c) => c.id === variable.variableCollectionId);
         if (!collection) throw new Error("Variable collection not found");
-        const modeId = (_f = args.modeId) != null ? _f : collection.defaultModeId;
+        const modeId = (_j = args.modeId) != null ? _j : collection.defaultModeId;
         if (!collection.modes.some((m) => m.modeId === modeId)) throw new Error("Mode does not belong to this collection");
         let value;
         if (variable.resolvedType === "COLOR" && typeof args.value === "string" && /^#[0-9a-fA-F]{6}$/.test(args.value)) value = rgb2(args.value);
@@ -1036,11 +1109,11 @@
         );
       }
       if ("layoutMode" in node && ["HORIZONTAL", "VERTICAL"].includes(node.layoutMode) && ((_b2 = rules.spacing) == null ? void 0 : _b2.length)) {
-        const properties2 = ["paddingTop", "paddingRight", "paddingBottom", "paddingLeft"];
-        if (node.primaryAxisAlignItems !== "SPACE_BETWEEN") properties2.push("itemSpacing");
-        if (node.layoutWrap === "WRAP" && node.counterAxisAlignContent !== "SPACE_BETWEEN") properties2.push("counterAxisSpacing");
+        const properties = ["paddingTop", "paddingRight", "paddingBottom", "paddingLeft"];
+        if (node.primaryAxisAlignItems !== "SPACE_BETWEEN") properties.push("itemSpacing");
+        if (node.layoutWrap === "WRAP" && node.counterAxisAlignContent !== "SPACE_BETWEEN") properties.push("counterAxisSpacing");
         const values = node;
-        const offScale = properties2.filter((key) => finite(values[key]) && ![0, ...rules.spacing].some((value) => Math.abs(values[key] - value) <= tolerance));
+        const offScale = properties.filter((key) => finite(values[key]) && ![0, ...rules.spacing].some((value) => Math.abs(values[key] - value) <= tolerance));
         if (offScale.length) note(
           node,
           "SPACING_OFF_SCALE",
@@ -1878,8 +1951,8 @@
     return { initialize, setMode, move };
   }
 
-  // plugin/code.ts
-  var properties = [
+  // src/node-properties.json
+  var node_properties_default = [
     "x",
     "y",
     "width",
@@ -1928,41 +2001,163 @@
     "flowStartingPoints",
     "textStyleId"
   ];
+
+  // src/response-limits.json
+  var response_limits_default = {
+    defaultReadBytes: 1048576,
+    minReadBytes: 4096,
+    maxReadBytes: 4194304,
+    maxResultBytes: 12582912,
+    transportBytes: 16777216
+  };
+
+  // plugin/response-size.ts
+  var MAX_RESULT_BYTES = response_limits_default.maxResultBytes;
+  var DEFAULT_READ_BYTES = response_limits_default.defaultReadBytes;
+  function jsonBytes(value) {
+    return utf8Bytes(JSON.stringify(value));
+  }
+  function utf8Bytes(text) {
+    let bytes = 0;
+    for (const character of text) {
+      const point = character.codePointAt(0);
+      bytes += point <= 127 ? 1 : point <= 2047 ? 2 : point <= 65535 ? 3 : 4;
+    }
+    return bytes;
+  }
+
+  // plugin/node-reader.ts
+  var readCommands = /* @__PURE__ */ new Set(["get_document", "get_selection", "get_node", "find_nodes", "export_node"]);
   function clean(value) {
     if (value === figma.mixed) return { mixed: true };
     if (value === void 0) return void 0;
     return JSON.parse(JSON.stringify(value, (_key, v) => typeof v === "symbol" ? { mixed: true } : v));
   }
-  function summarize(node, depth, budget) {
-    var _a, _b;
+  function summarize(node, depth, budget, childOffset = 0) {
+    var _a, _b, _c, _d;
     budget.left--;
-    const result2 = { id: node.id, type: node.type, name: node.name, parentId: (_a = node.parent) == null ? void 0 : _a.id };
+    (_a = budget.bytes) != null ? _a : budget.bytes = DEFAULT_READ_BYTES;
+    const result2 = { id: node.id, type: node.type, name: node.name.slice(0, 500), parentId: (_b = node.parent) == null ? void 0 : _b.id };
+    if (node.name.length > 500) result2.nameTruncated = true;
+    budget.bytes -= jsonBytes(result2) + 1024;
     const source = node;
-    for (const key of properties) {
-      if (key === "componentPropertyDefinitions" && node.type === "COMPONENT" && ((_b = node.parent) == null ? void 0 : _b.type) === "COMPONENT_SET") continue;
-      if (key in node) {
-        const value = source[key];
-        if (key === "characters" && typeof value === "string" && value.length > 1e4) {
-          result2[key] = value.slice(0, 1e4);
-          result2.charactersTruncated = true;
-          result2.characterCount = value.length;
-        } else result2[key] = clean(value);
+    const omitted = [];
+    for (const key of (_c = budget.fields) != null ? _c : node_properties_default) {
+      if (key === "componentPropertyDefinitions" && node.type === "COMPONENT" && ((_d = node.parent) == null ? void 0 : _d.type) === "COMPONENT_SET") continue;
+      if (!(key in node)) continue;
+      let value = source[key];
+      if (key === "characters" && typeof value === "string" && value.length > 1e4) {
+        result2.characterCount = value.length;
+        result2.charactersTruncated = true;
+        value = value.slice(0, 1e4);
       }
+      value = clean(value);
+      const size = jsonBytes({ [key]: value });
+      if (size > budget.bytes) {
+        omitted.push(key);
+        continue;
+      }
+      result2[key] = value;
+      budget.bytes -= size;
+    }
+    if (omitted.length) {
+      result2.omittedProperties = omitted;
+      result2.responseTruncated = true;
     }
     if ("children" in node) {
       const children = node.children;
       result2.childCount = children.length;
+      result2.childOffset = Math.min(childOffset, children.length);
       result2.children = [];
+      let next = result2.childOffset;
       if (depth > 0) {
-        for (const child of children) {
-          if (budget.left <= 0) break;
-          result2.children.push(summarize(child, depth - 1, budget));
+        while (next < children.length && budget.left > 0 && budget.bytes >= 2048) {
+          result2.children.push(summarize(children[next++], depth - 1, budget));
         }
       }
-      result2.childrenTruncated = result2.children.length < children.length;
+      result2.childrenTruncated = next < children.length;
+      result2.nextChildOffset = next < children.length ? next : null;
     }
     return result2;
   }
+  async function executeNodeRead(command, args, { getNode: getNode2, requireScene: requireScene2 }) {
+    var _a, _b, _c, _d, _e, _f;
+    if ((_a = args.fields) == null ? void 0 : _a.some((field) => !node_properties_default.includes(field))) throw new Error("Unknown node field");
+    const budget = { left: (_b = args.maxNodes) != null ? _b : 200, bytes: ((_c = args.maxResponseBytes) != null ? _c : DEFAULT_READ_BYTES) - 256, fields: args.fields };
+    switch (command) {
+      case "get_document":
+        return {
+          name: figma.root.name,
+          currentPageId: figma.currentPage.id,
+          pages: figma.root.children.map((p) => ({ id: p.id, name: p.name })),
+          capabilities: getCapabilities()
+        };
+      case "get_selection": {
+        const nodes = [];
+        const offset = Math.min((_d = args.selectionOffset) != null ? _d : 0, figma.currentPage.selection.length);
+        for (const node of figma.currentPage.selection.slice(offset)) {
+          if (budget.left <= 0 || budget.bytes < 2048) break;
+          nodes.push(summarize(node, args.depth, budget));
+        }
+        return {
+          nodes,
+          selectionCount: figma.currentPage.selection.length,
+          selectionOffset: offset,
+          nextSelectionOffset: offset + nodes.length < figma.currentPage.selection.length ? offset + nodes.length : null,
+          selectionTruncated: offset + nodes.length < figma.currentPage.selection.length
+        };
+      }
+      case "get_node":
+        return summarize(await getNode2(args.nodeId), args.depth, budget, (_e = args.childOffset) != null ? _e : 0);
+      case "find_nodes": {
+        const page = args.pageId ? await getNode2(args.pageId) : figma.currentPage;
+        if (page.type !== "PAGE") throw new Error("pageId must identify a page");
+        const stack = [page.children[Symbol.iterator]()];
+        const nodes = [];
+        let index = 0;
+        let visited = 0;
+        const query = args.query.toLocaleLowerCase();
+        while (stack.length) {
+          const next = stack[stack.length - 1].next();
+          if (next.done) {
+            stack.pop();
+            continue;
+          }
+          const node = next.value;
+          if ("children" in node) stack.push(node.children[Symbol.iterator]());
+          if (index++ < args.offset) continue;
+          visited++;
+          const matches = !args.type || node.type === args.type;
+          if (matches && (node.name.toLocaleLowerCase().includes(query) || node.type === "TEXT" && node.characters.toLocaleLowerCase().includes(query))) {
+            nodes.push({ id: node.id, name: node.name, type: node.type });
+          }
+          if (nodes.length >= args.limit || visited >= args.maxVisited) {
+            return { nodes, visited, nextOffset: index, complete: false };
+          }
+        }
+        return { nodes, visited, nextOffset: null, complete: true };
+      }
+      case "export_node": {
+        const node = requireScene2(await getNode2(args.nodeId));
+        if (!("exportAsync" in node)) throw new Error("Node does not support export");
+        if (args.format === "SVG") {
+          const svg = await node.exportAsync({ format: "SVG_STRING" });
+          if (svg.length > 4 * 1024 * 1024) throw new Error("SVG exceeds 4 MiB; export a smaller node");
+          return { svg };
+        }
+        const bounds = (_f = "absoluteRenderBounds" in node ? node.absoluteRenderBounds : null) != null ? _f : node.absoluteBoundingBox;
+        if (!bounds) throw new Error("Node has no visible bounds");
+        const actualScale = Math.min(args.scale, 4096 / Math.max(bounds.width, bounds.height, 1));
+        const bytes = await node.exportAsync({ format: "PNG", constraint: { type: "SCALE", value: actualScale } });
+        if (bytes.length > 8 * 1024 * 1024) throw new Error("PNG exceeds 8 MiB; lower scale or export a smaller node");
+        return { data: figma.base64Encode(bytes), mimeType: "image/png", scale: actualScale };
+      }
+      default:
+        throw new Error(`Unknown read operation: ${command}`);
+    }
+  }
+
+  // plugin/code.ts
   async function getNode(id) {
     const node = await figma.getNodeByIdAsync(id);
     if (!node || node.removed) throw new Error(`Node not found: ${id}`);
@@ -2146,10 +2341,10 @@
     }
   }
   async function execute(command, args) {
-    var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j;
+    var _a, _b, _c, _d, _e;
+    if (readCommands.has(command)) return executeNodeRead(command, args, { getNode, requireScene });
     if (extendedCommands.has(command)) return executeExtended(command, args, { getNode });
     if (designCommands.has(command)) return executeDesignCommand(command, args, { getNode, applyProps, createNode });
-    const budget = { left: (_a = args.maxNodes) != null ? _a : 200 };
     switch (command) {
       case "preview_design_fixes":
         return previewDesignFixes(args, getNode);
@@ -2161,55 +2356,6 @@
         return applyChanges(args, getNode);
       case "audit_design":
         return auditDesign(await getNode(args.nodeId), args);
-      case "get_document":
-        return {
-          name: figma.root.name,
-          currentPageId: figma.currentPage.id,
-          pages: figma.root.children.map((p) => ({ id: p.id, name: p.name })),
-          capabilities: getCapabilities()
-        };
-      case "get_selection": {
-        const nodes = [];
-        for (const node of figma.currentPage.selection) {
-          if (budget.left <= 0) break;
-          nodes.push(summarize(node, args.depth, budget));
-        }
-        return {
-          nodes,
-          selectionCount: figma.currentPage.selection.length,
-          selectionTruncated: nodes.length < figma.currentPage.selection.length
-        };
-      }
-      case "get_node":
-        return summarize(await getNode(args.nodeId), args.depth, budget);
-      case "find_nodes": {
-        const page = args.pageId ? await getNode(args.pageId) : figma.currentPage;
-        if (page.type !== "PAGE") throw new Error("pageId must identify a page");
-        const stack = [page.children[Symbol.iterator]()];
-        const nodes = [];
-        let index = 0;
-        let visited = 0;
-        const query = args.query.toLocaleLowerCase();
-        while (stack.length) {
-          const next = stack[stack.length - 1].next();
-          if (next.done) {
-            stack.pop();
-            continue;
-          }
-          const node = next.value;
-          if ("children" in node) stack.push(node.children[Symbol.iterator]());
-          if (index++ < args.offset) continue;
-          visited++;
-          const matches = !args.type || node.type === args.type;
-          if (matches && (node.name.toLocaleLowerCase().includes(query) || node.type === "TEXT" && node.characters.toLocaleLowerCase().includes(query))) {
-            nodes.push({ id: node.id, name: node.name, type: node.type });
-          }
-          if (nodes.length >= args.limit || visited >= args.maxVisited) {
-            return { nodes, visited, nextOffset: index, complete: false };
-          }
-        }
-        return { nodes, visited, nextOffset: null, complete: true };
-      }
       case "create_node": {
         const node = await createNode(args);
         figma.commitUndo();
@@ -2219,7 +2365,7 @@
         const node = requireScene(await getNode(args.nodeId));
         const target = node;
         const rollbackFields = ["name", "x", "y", "width", "height", "rotation", "opacity", "visible", "locked", "fill", "stroke", "strokeWeight", "cornerRadius"];
-        const canRestore = ["RECTANGLE", "ELLIPSE"].includes(node.type) && Object.keys(args.props).every((k) => rollbackFields.includes(k)) && !Object.keys((_b = target.boundVariables) != null ? _b : {}).length && !target.fillStyleId && !target.strokeStyleId && !(((_c = node.parent) == null ? void 0 : _c.layoutMode) && node.parent.layoutMode !== "NONE");
+        const canRestore = ["RECTANGLE", "ELLIPSE"].includes(node.type) && Object.keys(args.props).every((k) => rollbackFields.includes(k)) && !Object.keys((_a = target.boundVariables) != null ? _a : {}).length && !target.fillStyleId && !target.strokeStyleId && !(((_b = node.parent) == null ? void 0 : _b.layoutMode) && node.parent.layoutMode !== "NONE");
         const snapshot2 = canRestore ? {
           name: node.name,
           x: node.x,
@@ -2287,23 +2433,23 @@
         if (parent.type !== "PAGE" && parent.layoutMode && parent.layoutMode !== "NONE") {
           throw new Error("Destination uses auto layout; move into a non-auto-layout frame to preserve positioning");
         }
-        const parentBox = parent.type === "PAGE" ? { x: 0, y: 0 } : (_d = parent.absoluteBoundingBox) != null ? _d : { x: 0, y: 0 };
-        const positions = nodes.map((node) => {
-          var _a2;
-          const box = (_a2 = node.absoluteBoundingBox) != null ? _a2 : { x: node.x, y: node.y };
-          return { node, x: box.x, y: box.y };
-        });
-        const selected = new Set(nodes.map((node) => node.id));
-        const remaining = parent.children.filter((node) => !selected.has(node.id));
-        const insertIndex = Math.min((_e = args.insertIndex) != null ? _e : remaining.length, remaining.length);
-        for (let i = 0; i < positions.length; i++) {
-          const item = positions[i];
-          const maxIndex = parent.children.length - (((_f = item.node.parent) == null ? void 0 : _f.id) === parent.id ? 1 : 0);
-          parent.insertChild(Math.min(insertIndex + i, maxIndex), item.node);
-          if (args.preserveAbsolutePosition !== false) {
-            item.node.x = item.x - parentBox.x;
-            item.node.y = item.y - parentBox.y;
+        for (const node of nodes) {
+          let ancestor2 = node.parent;
+          while (ancestor2) {
+            if (seen.has(ancestor2.id)) throw new Error("Cannot move a node and its ancestor in the same operation");
+            ancestor2 = ancestor2.parent;
           }
+        }
+        const positions = args.preserveAbsolutePosition === false ? [] : nodes.map((node) => ({ node, world: worldTransform(node) }));
+        for (const item of positions) localTransform(parent, item.world);
+        let insertIndex;
+        try {
+          insertIndex = placeNodes(parent, nodes, args.insertIndex);
+          for (const item of positions) item.node.relativeTransform = localTransform(parent, item.world);
+          for (const item of positions) verifyWorldTransform(item.node, item.world);
+        } catch (error) {
+          figma.commitUndo();
+          throw new Error(`${error instanceof Error ? error.message : String(error)}. Some layers may have moved; inspect or use Figma Undo.`);
         }
         figma.commitUndo();
         return { parentId: parent.id, moved: nodes.map((node) => node.id), insertIndex, preservedAbsolutePosition: args.preserveAbsolutePosition !== false };
@@ -2315,15 +2461,16 @@
         for (const id of args.nodeIds) {
           if (selected.has(id)) throw new Error(`Duplicate node id: ${id}`);
           const node = requireScene(await getNode(id));
-          if (((_g = node.parent) == null ? void 0 : _g.id) !== parent.id) throw new Error("Every node must be a direct child of parentId");
+          if (((_c = node.parent) == null ? void 0 : _c.id) !== parent.id) throw new Error("Every node must be a direct child of parentId");
           selected.add(id);
           nodes.push(node);
         }
-        const remaining = parent.children.filter((node) => !selected.has(node.id));
-        const index = Math.min(args.index, remaining.length);
-        for (let i = 0; i < nodes.length; i++) {
-          const node = nodes[i];
-          parent.insertChild(Math.min(index + i, parent.children.length - 1), node);
+        let index;
+        try {
+          index = placeNodes(parent, nodes, args.index);
+        } catch (error) {
+          figma.commitUndo();
+          throw new Error(`${error instanceof Error ? error.message : String(error)}. Some layers may have moved; inspect or use Figma Undo.`);
         }
         figma.commitUndo();
         return { parentId: parent.id, nodeIds: nodes.map((node) => node.id), index };
@@ -2332,9 +2479,9 @@
         const node = requireScene(await getNode(args.nodeId));
         if (!("fills" in node)) throw new Error(`fills is not supported on ${node.type}`);
         const { image, normalized } = await createFigmaImage(args.base64, args.sourceMimeType);
-        node.fills = [{ type: "IMAGE", imageHash: image.hash, scaleMode: (_h = args.scaleMode) != null ? _h : "FILL" }];
+        node.fills = [{ type: "IMAGE", imageHash: image.hash, scaleMode: (_d = args.scaleMode) != null ? _d : "FILL" }];
         figma.commitUndo();
-        return { nodeId: node.id, imageHash: image.hash, normalized, scaleMode: (_i = args.scaleMode) != null ? _i : "FILL" };
+        return { nodeId: node.id, imageHash: image.hash, normalized, scaleMode: (_e = args.scaleMode) != null ? _e : "FILL" };
       }
       case "delete_node": {
         const node = requireScene(await getNode(args.nodeId));
@@ -2353,21 +2500,6 @@
         if (args.focus && nodes.length) figma.viewport.scrollAndZoomIntoView(nodes);
         return { selected: nodes.map((n) => n.id) };
       }
-      case "export_node": {
-        const node = requireScene(await getNode(args.nodeId));
-        if (!("exportAsync" in node)) throw new Error("Node does not support export");
-        if (args.format === "SVG") {
-          const svg = await node.exportAsync({ format: "SVG_STRING" });
-          if (svg.length > 4 * 1024 * 1024) throw new Error("SVG exceeds 4 MiB; export a smaller node");
-          return { svg };
-        }
-        const bounds = (_j = "absoluteRenderBounds" in node ? node.absoluteRenderBounds : null) != null ? _j : node.absoluteBoundingBox;
-        if (!bounds) throw new Error("Node has no visible bounds");
-        const actualScale = Math.min(args.scale, 4096 / Math.max(bounds.width, bounds.height, 1));
-        const bytes = await node.exportAsync({ format: "PNG", constraint: { type: "SCALE", value: actualScale } });
-        if (bytes.length > 8 * 1024 * 1024) throw new Error("PNG exceeds 8 MiB; lower scale or export a smaller node");
-        return { data: figma.base64Encode(bytes), mimeType: "image/png", scale: actualScale };
-      }
       default:
         throw new Error(`Unknown command: ${command}`);
     }
@@ -2379,14 +2511,14 @@
     figma.ui.postMessage({ type: "document", document: {
       name: figma.root.name,
       page: figma.currentPage.name,
-      pluginVersion: "0.7.24",
+      pluginVersion: "0.7.26",
       capabilities: getCapabilities()
     } });
   }
   figma.on("currentpagechange", publishDocument);
   var findingTargets = /* @__PURE__ */ new Set();
   figma.ui.onmessage = async (message) => {
-    var _a, _b, _c;
+    var _a, _b, _c, _d, _e;
     if ((message == null ? void 0 : message.type) === "decode-image-result" && typeof message.id === "string") {
       const pending = imageDecodeRequests.get(message.id);
       if (!pending) return;
@@ -2460,7 +2592,10 @@
         for (const finding of ((_c = (_b = result2.findings) != null ? _b : result2.skipped) != null ? _c : []).slice(0, 500))
           if (typeof finding.nodeId === "string") findingTargets.add(finding.nodeId);
       }
-      figma.ui.postMessage({ type: "result", id: message.id, result: result2 });
+      const response = { type: "result", id: message.id, result: result2 };
+      const responseLimit = ["get_node", "get_selection"].includes(message.command) ? Math.min((_e = (_d = message.args) == null ? void 0 : _d.maxResponseBytes) != null ? _e : DEFAULT_READ_BYTES, MAX_RESULT_BYTES) : MAX_RESULT_BYTES;
+      if (jsonBytes(response) > responseLimit) throw new Error("RESPONSE_TOO_LARGE: Read a smaller range or fewer fields. A write may already have completed; inspect the file before retrying.");
+      figma.ui.postMessage(response);
     } catch (error) {
       figma.ui.postMessage({ type: "result", id: message.id, error: error instanceof Error ? error.message : String(error) });
     } finally {

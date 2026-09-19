@@ -1,6 +1,6 @@
 ---
 name: figma-local-design
-description: "Figma Local Design позволяет AI-агенту создавать и редактировать макеты прямо в открытом файле Figma: от стайл-гайда и компонентов до экранов магазина, сервиса или приложения.\n\nРаботает через локальный сервер и Figma-плагин, не расходуя квоты REST API и официального Figma MCP. Ограничения тарифа Figma на страницы, права доступа и платные функции сохраняются.\n\nВозможности:\n• Создание макетов с нуля и редактирование существующих.\n• Подготовка стайл-гайдов, компонентов и экранов.\n• Выбор дизайн-системы при первой настройке: Gravity UI по умолчанию, текущий стиль, shadcn/ui, Material Design или своя система; отдельные правила для каждого проекта.\n• Учёт бюджета страниц с переиспользованием существующих; неизвестный тариф обрабатывается консервативно.\n• Автоматическая подготовка MCP и плагина без ручного ввода кода сопряжения.\n\nДля работы нужны Figma Desktop и Node.js 22+, для регистрации MCP — Codex CLI. Импорт manifest и запуск плагина в Figma выполняются вручную."
+description: "Работа с открытым файлом Figma через локальный MCP и плагин: изучение, создание и редактирование макетов, стайл-гайды, компоненты и перенос дизайна в код. Выбирай по фразам «используй плагин фигма для…», «используй плагин Figma, чтобы…», «сделай через плагин Фигмы…», «через локальный плагин Figma…», «используй Figma Local MCP…», «используй фигма локал дизайн…», use the local Figma plugin to… . Также: «изучи макет и сверстай», «перенеси дизайн из Фигмы в код», «сверстай выбранный экран», implement Figma design — когда выбран локальный плагин или продолжается работа через него. Изучает слои, токены, состояния и PNG/SVG; при реализации следует стеку и компонентам проекта. Подходит для подключения и диагностики локального плагина. Не подменяет явно выбранный другой инструмент и не применяется к задачам кода без источника в Figma или генерации растровой картинки. Не расходует квоты REST API и официального Figma MCP; ограничения тарифа и прав Figma сохраняются."
 ---
 
 # Figma Local Design
@@ -16,6 +16,7 @@ Work through the locally connected Figma plugin. This skill provides design deci
 - Choosing local asset folders or diagnosing denied file imports: [asset-access.md](references/asset-access.md).
 - Manual Figma plugin import and hidden folders: [figma-plugin-install.md](references/figma-plugin-install.md).
 - Creating or editing layouts: [design-workflow.md](references/design-workflow.md).
+- Studying an existing design and implementing it in application code: [design-to-code.md](references/design-to-code.md).
 - Reviewing layout quality after edits: [quality-checks.md](references/quality-checks.md).
 - Previewing text-height, fixed Auto Layout, project binding and other supported property edits on existing layers: [preview-changes.md](references/preview-changes.md).
 - Selecting rules, a UI library or a Figma kit: [project-rules.md](references/project-rules.md). Load only the selected profile. The default reference for new web projects is [gravity-ui.md](references/gravity-ui.md). The optional shadcn/ui reference is [shadcn-ui.md](references/shadcn-ui.md); use it when selected.
@@ -24,6 +25,8 @@ Work through the locally connected Figma plugin. This skill provides design deci
 - File plan and page budget: [file-limits.md](references/file-limits.md).
 
 ## Working contract
+
+For design-to-code tasks, follow design-to-code.md before the design-creation workflow. Read the Figma source and the target codebase, then implement within the requested scope. Figma stays read-only unless a design edit is also requested. Existing source design and repository conventions take priority over starter profiles; do not create or synchronize a style guide merely to implement a screen. An analysis-only request ends with findings, not unsolicited code changes.
 
 If the user asks to install this integration, or the local MCP is missing for their requested Figma workflow, read references/setup.md and run this skill's `scripts/install.mjs`. The skill includes inspectable runtime sources; do not require a separate project checkout, npm install, Python, or a download URL. Reuse an existing installation when found. Configure the local MCP and prepare its personalized Figma plugin before asking the user to perform the one remaining import step. An unavailable tool alone does not prove the server is unregistered: check the installer's result and distinguish a client restart from installation failure. Never claim the plugin was imported into Figma just because files were prepared.
 

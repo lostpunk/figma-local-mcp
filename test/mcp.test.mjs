@@ -59,7 +59,7 @@ for (const bundled of [false, true]) test(`MCP → WebSocket → plugin: full wo
   const manifest = JSON.parse(await readFile(new URL('../plugin/manifest.json', import.meta.url), 'utf8'));
   const endpoint = new URL(manifest.networkAccess.devAllowedDomains[0]);
   const ui = await readFile(new URL('../plugin/ui.html', import.meta.url), 'utf8');
-  const uiEndpoint = ui.match(/new WebSocket\('([^']+)'\)/)?.[1];
+  const uiEndpoint = ui.match(/new WebSocket\(["']([^"']+)["']\)/)?.[1];
   assert.equal(new URL(uiEndpoint).href, endpoint.href, 'plugin connects to the manifest endpoint');
   endpoint.port = String(connection.port);
   const socket = new WebSocket(endpoint, { origin: 'null' });
@@ -115,6 +115,14 @@ for (const bundled of [false, true]) test(`MCP → WebSocket → plugin: full wo
   assert.equal(create.isError, undefined);
   const nodeId = data(create).id;
   assert.equal(data(await call('get_node', { nodeId })).characters, 'Hello');
+  const focusedRead = data(await call('get_node', { nodeId, fields: ['characters'], maxResponseBytes: 4096 }));
+  assert.equal(focusedRead.characters, 'Hello');
+  assert.equal(focusedRead.fills, undefined);
+  assert.equal(data(await call('get_node', { nodeId, fields: [] })).characters, undefined);
+  const beforeInvalidRead = dispatchCount;
+  assert.equal((await call('get_node', { nodeId, fields: ['unknownProperty'] })).isError, true);
+  assert.equal((await call('get_node', { nodeId, childOffset: -1 })).isError, true);
+  assert.equal(dispatchCount, beforeInvalidRead);
   assert.equal(data(await call('update_node', { nodeId, props: { characters: 'World' } })).characters, 'World');
   assert.equal((await call('export_node', { nodeId })).content[0].type, 'image');
   assert.equal(data(await call('export_node', { nodeId, format: 'SVG' })).svg, '<svg/>');
@@ -188,6 +196,13 @@ for (const bundled of [false, true]) test(`MCP → WebSocket → plugin: full wo
   assert.equal((await call('set_variable', { variableId: brand.id, value: '#FF0000' })).isError, undefined);
   const system = data(await call('get_design_system', { prefix: 'Demo' }));
   assert.equal(system.variables.find(v => v.id === brand.id).valuesByMode[guide.modeId].r, 1);
+  const firstResources = data(await call('get_design_system', { prefix: 'Demo', limit: 1 }));
+  const nextResources = data(await call('get_design_system', { prefix: 'Demo', limit: 1,
+    offsets: { variables: firstResources.pagination.variables.nextOffset }, revision: firstResources.revision }));
+  assert.notEqual(nextResources.variables[0].id, firstResources.variables[0].id);
+  const filteredResources = data(await call('get_design_system', { collectionId: system.collections[0].id,
+    variableNamePrefix: system.variables.find(v => v.id === brand.id).name }));
+  assert.ok(filteredResources.variables.some(v => v.id === brand.id));
   const count = dispatchCount;
   assert.equal((await call('create_scene', { nodes: [{ ref: 'x', parentRef: 'missing', type: 'FRAME' }] })).isError, true);
   assert.equal((await call('create_style_guide', { colors: [{ name: 'x', value: '#FFFFFF' }, { name: 'x', value: '#000000' }] })).isError, true);

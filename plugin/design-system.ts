@@ -1,6 +1,7 @@
 import { createPageChecked, getCapabilities } from './capabilities';
 import { variableResolver } from './variables';
 import { syncGuide } from './sync-guide';
+import { worldTransform, localTransform, verifyWorldTransform } from './node-placement';
 type Args = Record<string, any>;
 type Helpers = {
   getNode(id: string): Promise<BaseNode>;
@@ -10,6 +11,17 @@ type Helpers = {
 export const designCommands = new Set(['create_style_guide', 'sync_style_guide', 'get_design_system', 'create_page', 'create_scene', 'create_instance', 'set_variable']);
 const rgb = (hex: string): RGB => ({ r: parseInt(hex.slice(1, 3), 16) / 255,
   g: parseInt(hex.slice(3, 5), 16) / 255, b: parseInt(hex.slice(5, 7), 16) / 255 });
+
+// A change detector for live pagination, not a security or identity token.
+function resourceRevision(value: unknown): string {
+  const text = JSON.stringify(value);
+  let a = 2166136261, b = 5381;
+  for (let i = 0; i < text.length; i++) {
+    a = Math.imul(a ^ text.charCodeAt(i), 16777619);
+    b = Math.imul(b, 33) ^ text.charCodeAt(i);
+  }
+  return `${(a >>> 0).toString(16)}-${(b >>> 0).toString(16)}`;
+}
 
 async function createGuide(args: Args, helpers: Helpers) {
   // Capture the destination before awaiting fonts: the user may switch pages meanwhile.
@@ -149,14 +161,30 @@ export async function executeDesignCommand(command: string, args: Args, helpers:
     case 'sync_style_guide': return syncGuide(args);
     case 'get_design_system': {
       const collections = await figma.variables.getLocalVariableCollectionsAsync();
-      const selected = collections.filter(c => c.name.startsWith(args.prefix));
+      const selected = collections.filter(c => c.name.startsWith(args.prefix ?? '') && (!args.collectionId || c.id === args.collectionId));
       const ids = new Set(selected.map(c => c.id));
-      const variables = (await figma.variables.getLocalVariablesAsync()).filter(v => ids.has(v.variableCollectionId));
-      const styles = (await figma.getLocalTextStylesAsync()).filter(s => s.name.startsWith(args.prefix));
-      return { collections: selected.slice(0, args.limit).map(c => ({ id: c.id, name: c.name, modes: c.modes, defaultModeId: c.defaultModeId })),
-        variables: variables.slice(0, args.limit).map(v => ({ id: v.id, name: v.name, type: v.resolvedType, collectionId: v.variableCollectionId, valuesByMode: v.valuesByMode })),
-        textStyles: styles.slice(0, args.limit).map(s => ({ id: s.id, name: s.name, fontName: s.fontName, fontSize: s.fontSize, lineHeight: s.lineHeight })),
-        truncated: selected.length > args.limit || variables.length > args.limit || styles.length > args.limit };
+      const variables = (await figma.variables.getLocalVariablesAsync()).filter(v => ids.has(v.variableCollectionId) && v.name.startsWith(args.variableNamePrefix ?? ''));
+      const styles = (await figma.getLocalTextStylesAsync()).filter(s => s.name.startsWith(args.prefix ?? ''));
+      const resources = {
+        collections: selected.map(c => ({ id: c.id, name: c.name, modes: c.modes, defaultModeId: c.defaultModeId })),
+        variables: variables.map(v => ({ id: v.id, name: v.name, type: v.resolvedType, collectionId: v.variableCollectionId, valuesByMode: v.valuesByMode })),
+        textStyles: styles.map(s => ({ id: s.id, name: s.name, fontName: s.fontName, fontSize: s.fontSize, lineHeight: s.lineHeight })),
+      };
+      for (const list of Object.values(resources)) list.sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+      const revision = resourceRevision([args.prefix ?? '', args.collectionId ?? '', args.variableNamePrefix ?? '', resources]);
+      const offsets = args.offsets ?? {};
+      if (Object.values(offsets).some(value => Number(value) > 0) && !args.revision) throw new Error('PAGINATION_REVISION_REQUIRED: Supply revision from the first get_design_system response.');
+      if (args.revision && args.revision !== revision) throw new Error('DESIGN_SYSTEM_CHANGED: Resources or filters changed. Restart pagination without offsets/revision.');
+      const result: Args = { revision, pagination: {}, truncated: false };
+      for (const key of ['collections', 'variables', 'textStyles'] as const) {
+        const list = resources[key];
+        const offset = Math.min(offsets[key] ?? 0, list.length);
+        result[key] = list.slice(offset, offset + (args.limit ?? 200));
+        const next = offset + result[key].length;
+        result.pagination[key] = { offset, total: list.length, nextOffset: next < list.length ? next : null };
+        result.truncated ||= next < list.length;
+      }
+      return result;
     }
     case 'create_page': {
       const matches = figma.root.children.filter(p => p.name === args.name);
@@ -188,11 +216,11 @@ export async function executeDesignCommand(command: string, args: Args, helpers:
           if (expected.type !== 'PAGE' && (expected as any).layoutMode !== 'NONE') {
             throw new Error(`Hierarchy verification failed for ${spec.ref}: destination uses auto layout`);
           }
-          const bounds = node.absoluteBoundingBox ?? { x: node.x, y: node.y };
-          const parentBounds = expected.type === 'PAGE' ? { x: 0, y: 0 } : ((expected as SceneNode).absoluteBoundingBox ?? { x: 0, y: 0 });
+          const world = worldTransform(node);
+          localTransform(expected, world);
           (expected as ChildrenMixin).appendChild(node);
-          node.x = bounds.x - parentBounds.x;
-          node.y = bounds.y - parentBounds.y;
+          node.relativeTransform = localTransform(expected, world);
+          verifyWorldTransform(node, world);
           if (node.parent?.id !== expectedId) throw new Error(`Hierarchy recovery failed for ${spec.ref}`);
           repaired.push(spec.ref);
         }

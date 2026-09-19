@@ -1,13 +1,15 @@
 # Maintaining the package
 
-Locate editable sources in the workspace or via the standalone skill's `installation.json`. Never treat generated `runtime/server.mjs`, `plugin/code.js` or a managed plugin cache as source.
+Locate editable sources in the workspace or via the standalone skill's `installation.json`. Never treat generated `runtime/server.mjs`, `plugin/code.js`, `plugin/ui.html` or a managed plugin cache as source.
 
 Change the narrowest layer:
 
 - Project preferences: `.figma-design.json` and selected rule files.
 - Shared workflow: skill references/assets, with essential routing in SKILL.md.
 - New operations or hard validation: schemas in `src/`, handlers in `plugin/`, matching MCP read/write annotations.
-- Packaging: setup/build/package scripts and recipient docs.
+- Plugin reads: `plugin/node-reader.ts`; shared UTF-8 sizing in `plugin/response-size.ts` and limits in `src/response-limits.json`.
+- Plugin window: `plugin/ui/*.js` and `plugin/ui.template.html`; build bundles them into one self-contained HTML.
+- Packaging: `src/package-layout.json` defines runtime files and additions for skill/source distributions. Build, packagers and installation use it; independent archive and private-data checks remain separate.
 
 Keep the local-only architecture unless the user explicitly changes the requirement. New tools should use Plugin API, not REST, official MCP, hidden endpoints or arbitrary eval. Verify APIs in official Figma docs and installed plugin typings. Distinguish local APIs from plan-dependent or remote-library features.
 

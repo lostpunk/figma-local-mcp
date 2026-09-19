@@ -7,6 +7,14 @@ import { prepareLocalPlugin } from './scripts/local-plugin.mjs';
 import { packageSkill } from './scripts/package-skill.mjs';
 process.chdir(dirname(fileURLToPath(import.meta.url)));
 const { version } = JSON.parse(await readFile('package.json', 'utf8'));
+const ui = await build({
+  entryPoints: ['plugin/ui/app.js'], bundle: true, write: false,
+  target: 'es2017', platform: 'browser', format: 'iife', legalComments: 'none',
+});
+const template = await readFile('plugin/ui.template.html', 'utf8');
+const uiMarker = '/* __UI_SCRIPT__ */';
+if (template.split(uiMarker).length !== 2) throw new Error('Expected one UI script slot');
+await writeFile('plugin/ui.html', template.replace(uiMarker, () => ui.outputFiles[0].text));
 await build({
   entryPoints: ['plugin/code.ts'], bundle: true, outfile: 'plugin/code.js',
   target: 'es2017', format: 'iife', legalComments: 'none',

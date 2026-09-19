@@ -1,3 +1,4 @@
+import { skillLayout } from '../src/package-layout.mjs';
 import { cp, lstat, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -7,19 +8,7 @@ const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const source = join(root, 'skills', 'figma-local-design');
 const output = join(root, 'dist', 'skillstore', 'figma-local-design');
 
-const files = [
-  'SKILL.md',
-  'version.json',
-  'agents/openai.yaml',
-  'package.json',
-  'scripts/install.mjs',
-  'scripts/setup.mjs',
-  'scripts/local-plugin.mjs',
-  'scripts/asset-access.mjs',
-  'scripts/project-rules.mjs',
-  'scripts/onboarding.mjs',
-];
-const directories = ['assets', 'references', 'runtime', 'plugin', 'src'];
+const { files, directories } = skillLayout;
 const forbidden = new Set(['.github', '.git', '.skillstore-meta.json', 'installation.json']);
 const externalUrl = /https?:\/\/[^\s<>()\[\]{}]+/g;
 const schemaIdAliases = new Map([

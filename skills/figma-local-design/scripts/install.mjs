@@ -7,10 +7,11 @@ import { realpathSync } from 'node:fs';
 import { prepareLocalPlugin } from './local-plugin.mjs';
 import { regularFiles, compareFiles, createFileTransaction } from '../src/install-files.mjs';
 import { checkInstallation } from '../src/installation-check.mjs';
+import { runtimeEntries } from '../src/package-layout.mjs';
 
 const marker = '.skill-install.json';
 const requiredEntries = ['package.json', 'runtime/server.mjs', 'plugin/manifest.json', 'plugin/code.js', 'plugin/ui.html', 'scripts/setup.mjs', 'scripts/local-plugin.mjs', 'src/pairing.mjs'];
-const copiedEntries = ['package.json', 'runtime', 'plugin', 'scripts/setup.mjs', 'scripts/local-plugin.mjs', 'scripts/asset-access.mjs', 'src'];
+const copiedEntries = runtimeEntries;
 
 async function exists(path) {
   try { await lstat(path); return true; }

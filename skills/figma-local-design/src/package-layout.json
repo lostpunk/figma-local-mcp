@@ -1,0 +1,53 @@
+{
+  "format": 1,
+  "runtime": {
+    "files": [
+      "package.json",
+      "scripts/setup.mjs",
+      "scripts/local-plugin.mjs",
+      "scripts/asset-access.mjs"
+    ],
+    "directories": [
+      "runtime",
+      "plugin",
+      "src"
+    ]
+  },
+  "skill": {
+    "files": [
+      "SKILL.md",
+      "version.json",
+      "agents/openai.yaml",
+      "scripts/install.mjs",
+      "scripts/project-rules.mjs",
+      "scripts/onboarding.mjs"
+    ],
+    "directories": [
+      "assets",
+      "references"
+    ]
+  },
+  "source": {
+    "files": [
+      ".codex-plugin/plugin.json",
+      ".mcp.json",
+      ".gitignore",
+      ".gitattributes",
+      "CHANGELOG.md",
+      "package-lock.json",
+      "build.mjs",
+      "tsconfig.json",
+      "README.md",
+      "INSTALL.md",
+      "CUSTOMIZE.md",
+      "CONTRIBUTING.md",
+      "codex.example.toml",
+      "LICENSE"
+    ],
+    "directories": [
+      "scripts",
+      "test",
+      "examples"
+    ]
+  }
+}

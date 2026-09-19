@@ -1,3 +1,4 @@
+import responseLimits from './response-limits.json' with { type: 'json' };
 import { createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -95,7 +96,7 @@ export async function createSharedWorker({ port, installationToken, diagnostics,
 
 export function connectSharedBridge({ port, installationToken, timeoutMs = 120000 }) {
   return new Promise((resolve, reject) => {
-    const socket = new WebSocket(`ws://127.0.0.1:${port}/mcp-bridge`, { maxPayload: 16 * 1024 * 1024, handshakeTimeout: 2000 });
+    const socket = new WebSocket(`ws://127.0.0.1:${port}/mcp-bridge`, { maxPayload: responseLimits.transportBytes, handshakeTimeout: 2000 });
     let challenge, clientNonce, authenticated = false;
     const pending = new Map();
     function fail(error) {

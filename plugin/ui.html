@@ -77,421 +77,637 @@
 </details>
 </main>
 <script>
-  const installationToken = '';
-  const status = document.getElementById('status');
-  const activity = document.getElementById('activity');
-  const connect = document.getElementById('connect');
-  const disconnect = document.getElementById('disconnect');
-  const filePlan = document.getElementById('file-plan');
-  const pageBudget = document.getElementById('page-budget');
-  const diagnosticLog = document.getElementById('diagnostic-log');
-  const history = [];
-  const supportEvents = [];
-  const recoveredResults = [];
-  let recoveredBytes = 0;
-  let serverVersion;
-  let lastErrorCode;
-  const pluginSessionId = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36) + '-' + Math.random().toString(36).slice(2);
-  const versions = document.getElementById('versions');
-  const recovery = document.getElementById('recovery');
-  const lateResults = [];
-  let compact = true;
-  let requestedMode;
-  let connectionState = 'waiting';
-  let notice;
-  let warnedOperation;
-  let warnedVersion;
-  const indicator = document.getElementById('indicator');
-  function renderIndicator(pulse = false) {
-    if (!indicator) return;
-    const busy = Boolean(activeRequest);
-    const mismatch = connectionState === 'ready' && serverVersion && documentInfo?.pluginVersion && serverVersion !== documentInfo.pluginVersion;
-    const kind = notice?.unread ? notice.level : mismatch ? 'warning' : busy ? 'running' : connectionState;
-    const label = notice?.unread ? notice.short : mismatch ? 'Версии отличаются' : busy ? 'Выполняется операция' : {
-      ready: 'Подключено', waiting: 'Ожидание MCP', connecting: 'Подключение…', offline: 'Отключено',
-    }[connectionState];
-    const continuingPulse = indicator.className === kind + ' pulse';
-    indicator.className = kind;
-    document.getElementById('signal').textContent = { ready: '✓', running: '↻', warning: '!', error: '!' }[kind] || '·';
-    document.getElementById('indicator-label').textContent = label;
-    indicator.title = notice?.unread ? notice.text : 'Открыть подробности';
-    indicator.setAttribute('aria-label', label + '. Открыть подробности');
-    if (pulse) void indicator.offsetWidth;
-    if (pulse || continuingPulse) indicator.className += ' pulse';
-  }
-  function important(code, level, short, text) {
-    if (notice?.unread && notice.level === 'error' && level !== 'error') return;
-    const fresh = !notice?.unread || notice.code !== code;
-    notice = { code, level, short, text, unread: true };
-    const box = document.getElementById('notice');
-    if (box) {
-      box.hidden = false;
-      box.className = level;
-      document.getElementById('notice-text').textContent = text;
-      document.getElementById('acknowledge').hidden = false;
-    }
-    renderIndicator(fresh);
-  }
-  function acknowledge() {
-    if (notice) notice.unread = false;
-    const button = document.getElementById('acknowledge');
-    if (button) button.hidden = true;
-    if (indicator) indicator.className = ''; // A persistent warning can remain, but its pulse is acknowledged.
-    renderIndicator();
-  }
-  function displayMode(value) {
-    compact = value;
-    const content = document.getElementById('panel-content'), toggle = document.getElementById('toggle-panel');
-    if (content) content.hidden = compact;
-    if (toggle) { toggle.textContent = compact ? 'Развернуть' : 'Свернуть'; toggle.setAttribute('aria-expanded', String(!compact)); }
-  }
-  function requestMode(value) {
-    requestedMode = value;
-    parent.postMessage({ pluginMessage: { type: 'presentation-mode', compact: value } }, '*');
-  }
-  if (indicator) indicator.onclick = () => requestMode(false);
-  const togglePanel = document.getElementById('toggle-panel');
-  if (togglePanel) togglePanel.onclick = () => requestMode(!(requestedMode ?? compact));
-  const acknowledgeButton = document.getElementById('acknowledge');
-  if (acknowledgeButton) acknowledgeButton.onclick = acknowledge;
-  for (const edge of ['left', 'right']) {
-    const button = document.getElementById('move-' + edge);
-    if (button) button.onclick = () => parent.postMessage({ pluginMessage: { type: 'presentation-move', edge } }, '*');
-  }
-  function safeLogText(value) {
-    if (value != null && !['string', 'number', 'boolean'].includes(typeof value)) return '[unsupported metadata]';
-    return String(value ?? '').slice(0, 8000)
-      .replace(/(?:https?|wss?):\/\/[^\s]+/gi, '[url]')
-      .replace(/(?:[A-Za-z]:\\|\/(?:Users|home|private|tmp|var)\/)[^\s]+/g, '[path]')
-      .replace(/\b(?:token|pairingCode|authorization|password)\s*[:=]\s*\S+/gi, '[secret]')
-      .replace(/[A-Za-z0-9+/=_-]{48,}/g, '[redacted]')
-      .replace(/[\x00-\x1f\x7f]/g, ' ').slice(0, 1000);
-  }
-  function journal(event, detail = '') {
-    supportEvents.push({ time: new Date().toISOString(), event: /^[A-Z_]+$/.test(event) ? event : 'UNKNOWN' });
-    if (supportEvents.length > 50) supportEvents.shift();
-    history.push(new Date().toISOString() + ' ' + event + ' ' + safeLogText(detail));
-    if (history.length > 50) history.shift();
-    if (diagnosticLog) diagnosticLog.textContent = history.join('\n');
-    if (['ERROR', 'UI_ERROR', 'UI_REJECTION'].includes(event)) important('operation-error', 'error', 'Ошибка · подробности', 'Произошла ошибка. Проверьте журнал и результат операции перед повтором.');
-    renderIndicator();
-  }
-  filePlan.onchange = () => parent.postMessage({ pluginMessage: { type: 'set-plan', plan: filePlan.value } }, '*');
-  let socket;
-  let documentInfo;
-  let activeRequest;
-  let activeCommand;
-  let activeArgs;
-  const audits = new Map();
-  function showQuality(command, result) {
-    const panel = document.getElementById('quality');
-    if (!panel || !result) return;
-    const summary = document.getElementById('quality-summary');
-    const action = document.getElementById('quality-action');
-    const list = document.getElementById('quality-findings');
-    let items;
-    if (command === 'audit_design') {
-      panel.hidden = false;
-      const key = result.rootId + JSON.stringify(activeArgs?.rules ?? {});
-      const previous = audits.get(key);
-      summary.textContent = 'Проверено элементов: ' + result.coverage.checked + ' · Замечаний: ' + result.findingCount +
-        (previous === undefined ? '' : ' · В прошлой проверке: ' + previous);
-      if (result.complete) audits.set(key, result.findingCount);
-      if (audits.size > 10) audits.delete(audits.keys().next().value);
-      action.textContent = result.complete ? 'Структурная проверка завершена. Внешний вид проверяется отдельно.' : 'Проверка неполная: смотрите ограничения охвата в результате MCP.';
-      items = result.findings;
-      if (result.findingCount || !result.complete) important('audit', 'warning', 'Проверьте макет', 'Аудит обнаружил замечания или завершился не полностью. Подробности ниже.');
-    } else if (['preview_audit_fixes', 'preview_design_fixes'].includes(command)) {
-      panel.hidden = false;
-      summary.textContent = 'Предпросмотр выбранных слоёв';
-      action.textContent = 'Предложено изменений: ' + (result.plan?.changes.length ?? 0) + ' · Пропущено: ' + result.skipped.length + ' — правки ещё не применены.';
-      items = result.skipped.map(item => ({ ...item, message: item.reason }));
-    } else if (command === 'apply_changes') {
-      panel.hidden = false;
-      action.textContent = 'Изменено слоёв: ' + result.nodeIds.length + ' · Требуется повторный аудит, чтобы подтвердить исправления.';
-      return;
-    } else return;
-    list.replaceChildren();
-    for (const item of items.slice(0, 50)) {
-      const row = document.createElement('p');
-      const label = document.createElement('span');
-      const titles = { TEXT_RENDER_OUTSIDE_BOX: 'Текст выходит за рамку', OUTSIDE_PARENT: 'Элемент выходит за контейнер',
-        MISSING_FONT: 'Недоступен шрифт', TEXT_TRUNCATION_ENABLED: 'Включено сокращение текста',
-        SPACING_OFF_SCALE: 'Отступ вне шкалы проекта', UNBOUND_COLOR: 'Цвет без переменной',
-        COLOR_VARIABLE_OUTSIDE_SYSTEM: 'Переменная цвета вне дизайн-системы', MIXED_COLOR_BINDINGS: 'Разные цвета внутри текста',
-        TEXT_STYLE_OUTSIDE_SYSTEM: 'Текстовый стиль вне дизайн-системы', COMPONENT_OUTSIDE_SYSTEM: 'Компонент вне дизайн-системы',
-        DESIGN_RULES_INVALID: 'Проверьте правила дизайн-системы', COMPONENT_STATES_MISSING: 'Не хватает состояний компонента' };
-      label.textContent = [item.name, titles[item.code] || item.code, item.message].filter(Boolean).join(' · ');
-      row.appendChild(label);
-      if (item.nodeId) {
-        const button = document.createElement('button');
-        button.textContent = 'Показать слой';
-        button.onclick = () => {
-          if (activeRequest) { document.getElementById('quality-focus-status').textContent = 'Дождитесь завершения операции.'; return; }
-          parent.postMessage({ pluginMessage: { type: 'focus-finding', nodeId: item.nodeId } }, '*');
-        };
-        row.appendChild(button);
+const installationToken = '';
+"use strict";
+(() => {
+  var __defProp = Object.defineProperty;
+  var __defProps = Object.defineProperties;
+  var __getOwnPropDescs = Object.getOwnPropertyDescriptors;
+  var __getOwnPropSymbols = Object.getOwnPropertySymbols;
+  var __hasOwnProp = Object.prototype.hasOwnProperty;
+  var __propIsEnum = Object.prototype.propertyIsEnumerable;
+  var __defNormalProp = (obj, key, value) => key in obj ? __defProp(obj, key, { enumerable: true, configurable: true, writable: true, value }) : obj[key] = value;
+  var __spreadValues = (a, b) => {
+    for (var prop in b || (b = {}))
+      if (__hasOwnProp.call(b, prop))
+        __defNormalProp(a, prop, b[prop]);
+    if (__getOwnPropSymbols)
+      for (var prop of __getOwnPropSymbols(b)) {
+        if (__propIsEnum.call(b, prop))
+          __defNormalProp(a, prop, b[prop]);
       }
-      list.appendChild(row);
-    }
-    if (items.length > 50) {
-      const note = document.createElement('p'); note.textContent = 'Показаны первые 50 замечаний. Полный результат — в MCP.'; list.appendChild(note);
-    }
-  }
-  let activeStartedAt;
-  let responseSocket;
-  let retryTimer;
-  let retryDelay = 1000;
-  let stopped = false;
-  let authenticatedSocket;
-  function showVersions() {
-    if (versions) versions.textContent = 'Плагин: ' + (documentInfo?.pluginVersion ?? 'неизвестно') + '; MCP: ' + (serverVersion ?? 'не подключён');
-    if (recovery && serverVersion && documentInfo?.pluginVersion !== serverVersion) recovery.textContent = 'Версии отличаются. Обновите MCP и плагин из одного пакета и перезапустите их.';
-    const mismatch = serverVersion && documentInfo?.pluginVersion && documentInfo.pluginVersion !== serverVersion ? serverVersion + '/' + documentInfo.pluginVersion : undefined;
-    if (mismatch && mismatch !== warnedVersion) important('version', 'warning', 'Обновите плагин', 'Версии MCP и плагина отличаются. Обновите и перезапустите их.');
-    warnedVersion = mismatch;
-    renderIndicator();
-  }
-  function supportReport() {
-    // Deliberately excludes document names, IDs, text, paths, keys and free-form errors.
-    return JSON.stringify({ format: 'figma-local-support-v1', versions: {
-      plugin: /^\d+\.\d+\.\d+$/.test(documentInfo?.pluginVersion ?? '') ? documentInfo.pluginVersion : null,
-      server: /^\d+\.\d+\.\d+$/.test(serverVersion ?? '') ? serverVersion : null },
-      connected: socket === authenticatedSocket && socket?.readyState === WebSocket.OPEN,
-      operation: activeRequest ? 'running' : 'idle', elapsedMs: activeRequest ? Date.now() - activeStartedAt : null,
-      lastErrorCode: lastErrorCode ?? null, events: supportEvents }, null, 2);
-  }
-  const copyReport = document.getElementById('copy-report');
-  if (copyReport) copyReport.onclick = async () => {
-    const report = supportReport();
-    const field = document.getElementById('support-report');
-    const feedback = document.getElementById('copy-status');
-    field.value = report;
-    try {
-      if (!navigator.clipboard?.writeText) throw new Error('Clipboard unavailable');
-      await navigator.clipboard.writeText(report);
-      feedback.textContent = 'Отчёт скопирован. Данные макета и ключ подключения исключены.';
-    } catch {
-      field.hidden = false; field.focus(); field.select();
-      feedback.textContent = 'Выделен готовый отчёт. Нажмите ⌘C или Ctrl+C.';
-    }
+    return a;
   };
-  if (typeof setInterval === 'function') setInterval(() => {
-    if (activeRequest) {
-      const seconds = Math.floor((Date.now() - activeStartedAt) / 1000);
-      activity.textContent = 'Выполняется: ' + activeCommand + ' · ' + seconds + ' с';
-      if (seconds >= 120 && recovery) recovery.textContent = 'Операция ещё выполняется. Не повторяйте её; оставьте плагин открытым и проверьте get_operation.';
-      if (seconds >= 120 && warnedOperation !== activeRequest) {
-        warnedOperation = activeRequest;
-        important('long-operation', 'warning', 'Операция ещё идёт', 'Операция выполняется больше двух минут. Не повторяйте её; проверьте её статус в MCP.');
+  var __spreadProps = (a, b) => __defProps(a, __getOwnPropDescs(b));
+
+  // plugin/ui/presentation.js
+  function createPresentationPanel(state2) {
+    const versions = document.getElementById("versions");
+    const recovery = document.getElementById("recovery");
+    const indicator = document.getElementById("indicator");
+    function renderIndicator2(pulse = false) {
+      var _a, _b, _c, _d;
+      if (!indicator)
+        return;
+      const busy = Boolean(state2.activeRequest);
+      const mismatch = state2.connectionState === "ready" && state2.serverVersion && ((_a = state2.documentInfo) == null ? void 0 : _a.pluginVersion) && state2.serverVersion !== state2.documentInfo.pluginVersion;
+      const kind = ((_b = state2.notice) == null ? void 0 : _b.unread) ? state2.notice.level : mismatch ? "warning" : busy ? "running" : state2.connectionState;
+      const label = ((_c = state2.notice) == null ? void 0 : _c.unread) ? state2.notice.short : mismatch ? "\u0412\u0435\u0440\u0441\u0438\u0438 \u043E\u0442\u043B\u0438\u0447\u0430\u044E\u0442\u0441\u044F" : busy ? "\u0412\u044B\u043F\u043E\u043B\u043D\u044F\u0435\u0442\u0441\u044F \u043E\u043F\u0435\u0440\u0430\u0446\u0438\u044F" : {
+        ready: "\u041F\u043E\u0434\u043A\u043B\u044E\u0447\u0435\u043D\u043E",
+        waiting: "\u041E\u0436\u0438\u0434\u0430\u043D\u0438\u0435 MCP",
+        connecting: "\u041F\u043E\u0434\u043A\u043B\u044E\u0447\u0435\u043D\u0438\u0435\u2026",
+        offline: "\u041E\u0442\u043A\u043B\u044E\u0447\u0435\u043D\u043E"
+      }[state2.connectionState];
+      const continuingPulse = indicator.className === kind + " pulse";
+      indicator.className = kind;
+      document.getElementById("signal").textContent = { ready: "\u2713", running: "\u21BB", warning: "!", error: "!" }[kind] || "\xB7";
+      document.getElementById("indicator-label").textContent = label;
+      indicator.title = ((_d = state2.notice) == null ? void 0 : _d.unread) ? state2.notice.text : "\u041E\u0442\u043A\u0440\u044B\u0442\u044C \u043F\u043E\u0434\u0440\u043E\u0431\u043D\u043E\u0441\u0442\u0438";
+      indicator.setAttribute("aria-label", label + ". \u041E\u0442\u043A\u0440\u044B\u0442\u044C \u043F\u043E\u0434\u0440\u043E\u0431\u043D\u043E\u0441\u0442\u0438");
+      if (pulse)
+        void indicator.offsetWidth;
+      if (pulse || continuingPulse)
+        indicator.className += " pulse";
+    }
+    function important2(code, level, short, text) {
+      var _a, _b;
+      if (((_a = state2.notice) == null ? void 0 : _a.unread) && state2.notice.level === "error" && level !== "error")
+        return;
+      const fresh = !((_b = state2.notice) == null ? void 0 : _b.unread) || state2.notice.code !== code;
+      state2.notice = { code, level, short, text, unread: true };
+      const box = document.getElementById("notice");
+      if (box) {
+        box.hidden = false;
+        box.className = level;
+        document.getElementById("notice-text").textContent = text;
+        document.getElementById("acknowledge").hidden = false;
+      }
+      renderIndicator2(fresh);
+    }
+    function acknowledge2() {
+      if (state2.notice)
+        state2.notice.unread = false;
+      const button = document.getElementById("acknowledge");
+      if (button)
+        button.hidden = true;
+      if (indicator)
+        indicator.className = "";
+      renderIndicator2();
+    }
+    function displayMode2(value) {
+      state2.compact = value;
+      const content = document.getElementById("panel-content"), toggle = document.getElementById("toggle-panel");
+      if (content)
+        content.hidden = state2.compact;
+      if (toggle) {
+        toggle.textContent = state2.compact ? "\u0420\u0430\u0437\u0432\u0435\u0440\u043D\u0443\u0442\u044C" : "\u0421\u0432\u0435\u0440\u043D\u0443\u0442\u044C";
+        toggle.setAttribute("aria-expanded", String(!state2.compact));
       }
     }
-  }, 1000);
-  if (installationToken) {
-    document.getElementById('pairing').hidden = true;
-    document.getElementById('intro').textContent = 'Автоматическое подключение к MCP на этом компьютере.';
+    function requestMode(value) {
+      state2.requestedMode = value;
+      parent.postMessage({ pluginMessage: { type: "presentation-mode", compact: value } }, "*");
+    }
+    if (indicator)
+      indicator.onclick = () => requestMode(false);
+    const togglePanel = document.getElementById("toggle-panel");
+    if (togglePanel)
+      togglePanel.onclick = () => {
+        var _a;
+        return requestMode(!((_a = state2.requestedMode) != null ? _a : state2.compact));
+      };
+    const acknowledgeButton = document.getElementById("acknowledge");
+    if (acknowledgeButton)
+      acknowledgeButton.onclick = acknowledge2;
+    for (const edge of ["left", "right"]) {
+      const button = document.getElementById("move-" + edge);
+      if (button)
+        button.onclick = () => parent.postMessage({ pluginMessage: { type: "presentation-move", edge } }, "*");
+    }
+    function showVersions2() {
+      var _a, _b, _c, _d, _e;
+      if (versions)
+        versions.textContent = "\u041F\u043B\u0430\u0433\u0438\u043D: " + ((_b = (_a = state2.documentInfo) == null ? void 0 : _a.pluginVersion) != null ? _b : "\u043D\u0435\u0438\u0437\u0432\u0435\u0441\u0442\u043D\u043E") + "; MCP: " + ((_c = state2.serverVersion) != null ? _c : "\u043D\u0435 \u043F\u043E\u0434\u043A\u043B\u044E\u0447\u0451\u043D");
+      if (recovery && state2.serverVersion && ((_d = state2.documentInfo) == null ? void 0 : _d.pluginVersion) !== state2.serverVersion)
+        recovery.textContent = "\u0412\u0435\u0440\u0441\u0438\u0438 \u043E\u0442\u043B\u0438\u0447\u0430\u044E\u0442\u0441\u044F. \u041E\u0431\u043D\u043E\u0432\u0438\u0442\u0435 MCP \u0438 \u043F\u043B\u0430\u0433\u0438\u043D \u0438\u0437 \u043E\u0434\u043D\u043E\u0433\u043E \u043F\u0430\u043A\u0435\u0442\u0430 \u0438 \u043F\u0435\u0440\u0435\u0437\u0430\u043F\u0443\u0441\u0442\u0438\u0442\u0435 \u0438\u0445.";
+      const mismatch = state2.serverVersion && ((_e = state2.documentInfo) == null ? void 0 : _e.pluginVersion) && state2.documentInfo.pluginVersion !== state2.serverVersion ? state2.serverVersion + "/" + state2.documentInfo.pluginVersion : void 0;
+      if (mismatch && mismatch !== state2.warnedVersion)
+        important2("version", "warning", "\u041E\u0431\u043D\u043E\u0432\u0438\u0442\u0435 \u043F\u043B\u0430\u0433\u0438\u043D", "\u0412\u0435\u0440\u0441\u0438\u0438 MCP \u0438 \u043F\u043B\u0430\u0433\u0438\u043D\u0430 \u043E\u0442\u043B\u0438\u0447\u0430\u044E\u0442\u0441\u044F. \u041E\u0431\u043D\u043E\u0432\u0438\u0442\u0435 \u0438 \u043F\u0435\u0440\u0435\u0437\u0430\u043F\u0443\u0441\u0442\u0438\u0442\u0435 \u0438\u0445.");
+      state2.warnedVersion = mismatch;
+      renderIndicator2();
+    }
+    return { renderIndicator: renderIndicator2, important: important2, acknowledge: acknowledge2, displayMode: displayMode2, showVersions: showVersions2 };
   }
-  function scheduleReconnect() {
-    if (!installationToken || stopped || activeRequest || retryTimer) return;
-    retryTimer = setTimeout(() => { retryTimer = undefined; connectToBridge(); }, retryDelay);
-    retryDelay = Math.min(retryDelay * 2, 10000);
-  }
-  function connectToBridge() {
-    const token = installationToken || document.getElementById('token').value.trim();
-    if (!/^[a-f0-9]{64}$/.test(token)) { status.textContent = 'Вставьте полный pairingCode из get_connection'; return; }
-    if (activeRequest) { status.textContent = 'Дождитесь завершения текущей операции'; return; }
-    clearTimeout(retryTimer);
-    retryTimer = undefined;
-    if (socket) { const previous = socket; socket = undefined; previous.close(); }
-    const current = new WebSocket('ws://localhost:3055');
-    socket = current;
-    connectionState = 'connecting'; renderIndicator();
-    status.textContent = 'Подключение…';
-    connect.disabled = true;
-    disconnect.hidden = false;
-    current.onopen = () => current.send(JSON.stringify({ type: 'hello', token, pluginSessionId, document: documentInfo }));
-    current.onmessage = event => {
-      if (socket !== current) return;
-      let message;
-      try { message = JSON.parse(event.data); } catch { current.close(); return; }
-      if (!message || typeof message !== 'object') { current.close(); return; }
-      if (message.type === 'ready') {
-        authenticatedSocket = current;
-        connectionState = 'ready';
-        serverVersion = message.serverVersion;
-        if (recovery) recovery.textContent = '';
-        showVersions();
-        retryDelay = 1000;
-        status.textContent = 'Соединение с локальным MCP установлено.';
-        disconnect.hidden = false;
-        document.getElementById('token').value = '';
-        journal('CONNECTED');
-        while (lateResults.length) current.send(JSON.stringify(lateResults.shift()));
-        for (const result of recoveredResults) current.send(JSON.stringify({ ...result, type: 'recovered_result' }));
-      } else if (message.type === 'result_ack') {
-        const index = recoveredResults.findIndex(result => result.id === message.id);
-        if (index >= 0) recoveredBytes -= JSON.stringify(recoveredResults.splice(index, 1)[0]).length * 2;
-      } else if (message.type === 'command') {
-        if (activeRequest === message.id) return;
-        if (activeRequest) {
-          current.send(JSON.stringify({ type: 'result', id: message.id, error: 'Plugin busy' })); return;
+
+  // plugin/ui/diagnostics.js
+  function createDiagnosticsPanel(state2, { important: important2, renderIndicator: renderIndicator2 }) {
+    const diagnosticLog = document.getElementById("diagnostic-log");
+    const history = [], supportEvents = [];
+    function safeLogText2(value) {
+      if (value != null && !["string", "number", "boolean"].includes(typeof value))
+        return "[unsupported metadata]";
+      return String(value != null ? value : "").slice(0, 8e3).replace(/(?:https?|wss?):\/\/[^\s]+/gi, "[url]").replace(/(?:[A-Za-z]:\\|\/(?:Users|home|private|tmp|var)\/)[^\s]+/g, "[path]").replace(/\b(?:token|pairingCode|authorization|password)\s*[:=]\s*\S+/gi, "[secret]").replace(/[A-Za-z0-9+/=_-]{48,}/g, "[redacted]").replace(/[\x00-\x1f\x7f]/g, " ").slice(0, 1e3);
+    }
+    function journal2(event, detail = "") {
+      supportEvents.push({ time: (/* @__PURE__ */ new Date()).toISOString(), event: /^[A-Z_]+$/.test(event) ? event : "UNKNOWN" });
+      if (supportEvents.length > 50)
+        supportEvents.shift();
+      history.push((/* @__PURE__ */ new Date()).toISOString() + " " + event + " " + safeLogText2(detail));
+      if (history.length > 50)
+        history.shift();
+      if (diagnosticLog)
+        diagnosticLog.textContent = history.join("\n");
+      if (["ERROR", "UI_ERROR", "UI_REJECTION"].includes(event))
+        important2("operation-error", "error", "\u041E\u0448\u0438\u0431\u043A\u0430 \xB7 \u043F\u043E\u0434\u0440\u043E\u0431\u043D\u043E\u0441\u0442\u0438", "\u041F\u0440\u043E\u0438\u0437\u043E\u0448\u043B\u0430 \u043E\u0448\u0438\u0431\u043A\u0430. \u041F\u0440\u043E\u0432\u0435\u0440\u044C\u0442\u0435 \u0436\u0443\u0440\u043D\u0430\u043B \u0438 \u0440\u0435\u0437\u0443\u043B\u044C\u0442\u0430\u0442 \u043E\u043F\u0435\u0440\u0430\u0446\u0438\u0438 \u043F\u0435\u0440\u0435\u0434 \u043F\u043E\u0432\u0442\u043E\u0440\u043E\u043C.");
+      renderIndicator2();
+    }
+    function supportReport() {
+      var _a, _b, _c, _d, _e;
+      return JSON.stringify({
+        format: "figma-local-support-v1",
+        versions: {
+          plugin: /^\d+\.\d+\.\d+$/.test((_b = (_a = state2.documentInfo) == null ? void 0 : _a.pluginVersion) != null ? _b : "") ? state2.documentInfo.pluginVersion : null,
+          server: /^\d+\.\d+\.\d+$/.test((_c = state2.serverVersion) != null ? _c : "") ? state2.serverVersion : null
+        },
+        connected: state2.socket === state2.authenticatedSocket && ((_d = state2.socket) == null ? void 0 : _d.readyState) === WebSocket.OPEN,
+        operation: state2.activeRequest ? "running" : "idle",
+        elapsedMs: state2.activeRequest ? Date.now() - state2.activeStartedAt : null,
+        lastErrorCode: (_e = state2.lastErrorCode) != null ? _e : null,
+        events: supportEvents
+      }, null, 2);
+    }
+    const copyReport = document.getElementById("copy-report");
+    if (copyReport)
+      copyReport.onclick = async () => {
+        var _a;
+        const report = supportReport();
+        const field = document.getElementById("support-report");
+        const feedback = document.getElementById("copy-status");
+        field.value = report;
+        try {
+          if (!((_a = navigator.clipboard) == null ? void 0 : _a.writeText))
+            throw new Error("Clipboard unavailable");
+          await navigator.clipboard.writeText(report);
+          feedback.textContent = "\u041E\u0442\u0447\u0451\u0442 \u0441\u043A\u043E\u043F\u0438\u0440\u043E\u0432\u0430\u043D. \u0414\u0430\u043D\u043D\u044B\u0435 \u043C\u0430\u043A\u0435\u0442\u0430 \u0438 \u043A\u043B\u044E\u0447 \u043F\u043E\u0434\u043A\u043B\u044E\u0447\u0435\u043D\u0438\u044F \u0438\u0441\u043A\u043B\u044E\u0447\u0435\u043D\u044B.";
+        } catch (e) {
+          field.hidden = false;
+          field.focus();
+          field.select();
+          feedback.textContent = "\u0412\u044B\u0434\u0435\u043B\u0435\u043D \u0433\u043E\u0442\u043E\u0432\u044B\u0439 \u043E\u0442\u0447\u0451\u0442. \u041D\u0430\u0436\u043C\u0438\u0442\u0435 \u2318C \u0438\u043B\u0438 Ctrl+C.";
         }
-        activeRequest = message.id;
-        activeCommand = message.command;
-        activeArgs = message.args;
-        activeStartedAt = Date.now();
-        if (recovery) recovery.textContent = '';
-        journal('START', activeCommand + ' id=' + activeRequest);
-        filePlan.disabled = true;
-        responseSocket = current;
-        activity.textContent = 'Выполняется: ' + message.command;
-        parent.postMessage({ pluginMessage: message }, '*');
-      }
-    };
-    current.onclose = event => {
-      if (socket !== current) return;
-      const wasReady = connectionState === 'ready';
-      connectionState = stopped ? 'offline' : 'waiting';
-      if (!stopped && (wasReady || activeRequest)) important('connection', 'warning', 'Связь потеряна', activeRequest ? 'Связь потеряна во время операции. Дождитесь результата; не повторяйте её.' : 'Соединение с MCP потеряно. Плагин попробует подключиться снова.');
-      journal('DISCONNECTED', 'code=' + event.code + (activeRequest ? ' id=' + activeRequest + ' outcome=unknown' : ''));
-      status.textContent = 'Отключено' + (event.reason ? ': ' + event.reason : '. Вызовите get_connection и подключитесь снова.');
-      connect.disabled = false;
-      disconnect.hidden = true;
-      if (event.code === 1008) {
-        stopped = true; lastErrorCode = 'CONNECTION_REJECTED';
-        important('rejected', 'error', 'Подключение отклонено', 'Подключение отклонено. Проверьте, не открыта ли вторая копия плагина.');
-        if (recovery) recovery.textContent = 'Подключение отклонено. Закройте вторую копию плагина; если не помогло, обновите локальную установку и запустите Auto снова.';
-      }
-      if (installationToken && !stopped) {
-        status.textContent = activeRequest ? 'Связь потеряна. Ожидаем завершения операции; повторно она не отправляется.' : 'Ожидаем локальный MCP. Подключение восстановится автоматически.';
-        disconnect.hidden = false;
-        scheduleReconnect();
-      }
-    };
-    current.onerror = () => { if (socket === current) { status.textContent = 'Нет соединения с локальным MCP на порту 3055'; journal('SOCKET_ERROR'); lastErrorCode = 'SOCKET_ERROR'; } };
+      };
+    return { journal: journal2, safeLogText: safeLogText2 };
   }
-  connect.onclick = () => { stopped = false; connectToBridge(); };
-  disconnect.onclick = () => {
-    stopped = true;
-    clearTimeout(retryTimer);
-    retryTimer = undefined;
-    socket?.close();
-    disconnect.hidden = true;
-    status.textContent = 'Отключено';
-    connectionState = 'offline'; renderIndicator();
+
+  // plugin/ui/quality.js
+  function createQualityPanel(state2, { important: important2 }) {
+    const audits = /* @__PURE__ */ new Map();
+    function showQuality2(command, result) {
+      var _a, _b, _c, _d;
+      const panel = document.getElementById("quality");
+      if (!panel || !result)
+        return;
+      const summary = document.getElementById("quality-summary");
+      const action = document.getElementById("quality-action");
+      const list = document.getElementById("quality-findings");
+      let items;
+      if (command === "audit_design") {
+        panel.hidden = false;
+        const key = result.rootId + JSON.stringify((_b = (_a = state2.activeArgs) == null ? void 0 : _a.rules) != null ? _b : {});
+        const previous = audits.get(key);
+        summary.textContent = "\u041F\u0440\u043E\u0432\u0435\u0440\u0435\u043D\u043E \u044D\u043B\u0435\u043C\u0435\u043D\u0442\u043E\u0432: " + result.coverage.checked + " \xB7 \u0417\u0430\u043C\u0435\u0447\u0430\u043D\u0438\u0439: " + result.findingCount + (previous === void 0 ? "" : " \xB7 \u0412 \u043F\u0440\u043E\u0448\u043B\u043E\u0439 \u043F\u0440\u043E\u0432\u0435\u0440\u043A\u0435: " + previous);
+        if (result.complete)
+          audits.set(key, result.findingCount);
+        if (audits.size > 10)
+          audits.delete(audits.keys().next().value);
+        action.textContent = result.complete ? "\u0421\u0442\u0440\u0443\u043A\u0442\u0443\u0440\u043D\u0430\u044F \u043F\u0440\u043E\u0432\u0435\u0440\u043A\u0430 \u0437\u0430\u0432\u0435\u0440\u0448\u0435\u043D\u0430. \u0412\u043D\u0435\u0448\u043D\u0438\u0439 \u0432\u0438\u0434 \u043F\u0440\u043E\u0432\u0435\u0440\u044F\u0435\u0442\u0441\u044F \u043E\u0442\u0434\u0435\u043B\u044C\u043D\u043E." : "\u041F\u0440\u043E\u0432\u0435\u0440\u043A\u0430 \u043D\u0435\u043F\u043E\u043B\u043D\u0430\u044F: \u0441\u043C\u043E\u0442\u0440\u0438\u0442\u0435 \u043E\u0433\u0440\u0430\u043D\u0438\u0447\u0435\u043D\u0438\u044F \u043E\u0445\u0432\u0430\u0442\u0430 \u0432 \u0440\u0435\u0437\u0443\u043B\u044C\u0442\u0430\u0442\u0435 MCP.";
+        items = result.findings;
+        if (result.findingCount || !result.complete)
+          important2("audit", "warning", "\u041F\u0440\u043E\u0432\u0435\u0440\u044C\u0442\u0435 \u043C\u0430\u043A\u0435\u0442", "\u0410\u0443\u0434\u0438\u0442 \u043E\u0431\u043D\u0430\u0440\u0443\u0436\u0438\u043B \u0437\u0430\u043C\u0435\u0447\u0430\u043D\u0438\u044F \u0438\u043B\u0438 \u0437\u0430\u0432\u0435\u0440\u0448\u0438\u043B\u0441\u044F \u043D\u0435 \u043F\u043E\u043B\u043D\u043E\u0441\u0442\u044C\u044E. \u041F\u043E\u0434\u0440\u043E\u0431\u043D\u043E\u0441\u0442\u0438 \u043D\u0438\u0436\u0435.");
+      } else if (["preview_audit_fixes", "preview_design_fixes"].includes(command)) {
+        panel.hidden = false;
+        summary.textContent = "\u041F\u0440\u0435\u0434\u043F\u0440\u043E\u0441\u043C\u043E\u0442\u0440 \u0432\u044B\u0431\u0440\u0430\u043D\u043D\u044B\u0445 \u0441\u043B\u043E\u0451\u0432";
+        action.textContent = "\u041F\u0440\u0435\u0434\u043B\u043E\u0436\u0435\u043D\u043E \u0438\u0437\u043C\u0435\u043D\u0435\u043D\u0438\u0439: " + ((_d = (_c = result.plan) == null ? void 0 : _c.changes.length) != null ? _d : 0) + " \xB7 \u041F\u0440\u043E\u043F\u0443\u0449\u0435\u043D\u043E: " + result.skipped.length + " \u2014 \u043F\u0440\u0430\u0432\u043A\u0438 \u0435\u0449\u0451 \u043D\u0435 \u043F\u0440\u0438\u043C\u0435\u043D\u0435\u043D\u044B.";
+        items = result.skipped.map((item) => __spreadProps(__spreadValues({}, item), { message: item.reason }));
+      } else if (command === "apply_changes") {
+        panel.hidden = false;
+        action.textContent = "\u0418\u0437\u043C\u0435\u043D\u0435\u043D\u043E \u0441\u043B\u043E\u0451\u0432: " + result.nodeIds.length + " \xB7 \u0422\u0440\u0435\u0431\u0443\u0435\u0442\u0441\u044F \u043F\u043E\u0432\u0442\u043E\u0440\u043D\u044B\u0439 \u0430\u0443\u0434\u0438\u0442, \u0447\u0442\u043E\u0431\u044B \u043F\u043E\u0434\u0442\u0432\u0435\u0440\u0434\u0438\u0442\u044C \u0438\u0441\u043F\u0440\u0430\u0432\u043B\u0435\u043D\u0438\u044F.";
+        return;
+      } else
+        return;
+      list.replaceChildren();
+      for (const item of items.slice(0, 50)) {
+        const row = document.createElement("p");
+        const label = document.createElement("span");
+        const titles = {
+          TEXT_RENDER_OUTSIDE_BOX: "\u0422\u0435\u043A\u0441\u0442 \u0432\u044B\u0445\u043E\u0434\u0438\u0442 \u0437\u0430 \u0440\u0430\u043C\u043A\u0443",
+          OUTSIDE_PARENT: "\u042D\u043B\u0435\u043C\u0435\u043D\u0442 \u0432\u044B\u0445\u043E\u0434\u0438\u0442 \u0437\u0430 \u043A\u043E\u043D\u0442\u0435\u0439\u043D\u0435\u0440",
+          MISSING_FONT: "\u041D\u0435\u0434\u043E\u0441\u0442\u0443\u043F\u0435\u043D \u0448\u0440\u0438\u0444\u0442",
+          TEXT_TRUNCATION_ENABLED: "\u0412\u043A\u043B\u044E\u0447\u0435\u043D\u043E \u0441\u043E\u043A\u0440\u0430\u0449\u0435\u043D\u0438\u0435 \u0442\u0435\u043A\u0441\u0442\u0430",
+          SPACING_OFF_SCALE: "\u041E\u0442\u0441\u0442\u0443\u043F \u0432\u043D\u0435 \u0448\u043A\u0430\u043B\u044B \u043F\u0440\u043E\u0435\u043A\u0442\u0430",
+          UNBOUND_COLOR: "\u0426\u0432\u0435\u0442 \u0431\u0435\u0437 \u043F\u0435\u0440\u0435\u043C\u0435\u043D\u043D\u043E\u0439",
+          COLOR_VARIABLE_OUTSIDE_SYSTEM: "\u041F\u0435\u0440\u0435\u043C\u0435\u043D\u043D\u0430\u044F \u0446\u0432\u0435\u0442\u0430 \u0432\u043D\u0435 \u0434\u0438\u0437\u0430\u0439\u043D-\u0441\u0438\u0441\u0442\u0435\u043C\u044B",
+          MIXED_COLOR_BINDINGS: "\u0420\u0430\u0437\u043D\u044B\u0435 \u0446\u0432\u0435\u0442\u0430 \u0432\u043D\u0443\u0442\u0440\u0438 \u0442\u0435\u043A\u0441\u0442\u0430",
+          TEXT_STYLE_OUTSIDE_SYSTEM: "\u0422\u0435\u043A\u0441\u0442\u043E\u0432\u044B\u0439 \u0441\u0442\u0438\u043B\u044C \u0432\u043D\u0435 \u0434\u0438\u0437\u0430\u0439\u043D-\u0441\u0438\u0441\u0442\u0435\u043C\u044B",
+          COMPONENT_OUTSIDE_SYSTEM: "\u041A\u043E\u043C\u043F\u043E\u043D\u0435\u043D\u0442 \u0432\u043D\u0435 \u0434\u0438\u0437\u0430\u0439\u043D-\u0441\u0438\u0441\u0442\u0435\u043C\u044B",
+          DESIGN_RULES_INVALID: "\u041F\u0440\u043E\u0432\u0435\u0440\u044C\u0442\u0435 \u043F\u0440\u0430\u0432\u0438\u043B\u0430 \u0434\u0438\u0437\u0430\u0439\u043D-\u0441\u0438\u0441\u0442\u0435\u043C\u044B",
+          COMPONENT_STATES_MISSING: "\u041D\u0435 \u0445\u0432\u0430\u0442\u0430\u0435\u0442 \u0441\u043E\u0441\u0442\u043E\u044F\u043D\u0438\u0439 \u043A\u043E\u043C\u043F\u043E\u043D\u0435\u043D\u0442\u0430"
+        };
+        label.textContent = [item.name, titles[item.code] || item.code, item.message].filter(Boolean).join(" \xB7 ");
+        row.appendChild(label);
+        if (item.nodeId) {
+          const button = document.createElement("button");
+          button.textContent = "\u041F\u043E\u043A\u0430\u0437\u0430\u0442\u044C \u0441\u043B\u043E\u0439";
+          button.onclick = () => {
+            if (state2.activeRequest) {
+              document.getElementById("quality-focus-status").textContent = "\u0414\u043E\u0436\u0434\u0438\u0442\u0435\u0441\u044C \u0437\u0430\u0432\u0435\u0440\u0448\u0435\u043D\u0438\u044F \u043E\u043F\u0435\u0440\u0430\u0446\u0438\u0438.";
+              return;
+            }
+            parent.postMessage({ pluginMessage: { type: "focus-finding", nodeId: item.nodeId } }, "*");
+          };
+          row.appendChild(button);
+        }
+        list.appendChild(row);
+      }
+      if (items.length > 50) {
+        const note = document.createElement("p");
+        note.textContent = "\u041F\u043E\u043A\u0430\u0437\u0430\u043D\u044B \u043F\u0435\u0440\u0432\u044B\u0435 50 \u0437\u0430\u043C\u0435\u0447\u0430\u043D\u0438\u0439. \u041F\u043E\u043B\u043D\u044B\u0439 \u0440\u0435\u0437\u0443\u043B\u044C\u0442\u0430\u0442 \u2014 \u0432 MCP.";
+        list.appendChild(note);
+      }
+    }
+    return { showQuality: showQuality2 };
+  }
+
+  // src/response-limits.json
+  var response_limits_default = {
+    defaultReadBytes: 1048576,
+    minReadBytes: 4096,
+    maxReadBytes: 4194304,
+    maxResultBytes: 12582912,
+    transportBytes: 16777216
   };
+
+  // plugin/response-size.ts
+  var MAX_RESULT_BYTES = response_limits_default.maxResultBytes;
+  var DEFAULT_READ_BYTES = response_limits_default.defaultReadBytes;
+  function jsonBytes(value) {
+    return utf8Bytes(JSON.stringify(value));
+  }
+  function utf8Bytes(text) {
+    let bytes = 0;
+    for (const character of text) {
+      const point = character.codePointAt(0);
+      bytes += point <= 127 ? 1 : point <= 2047 ? 2 : point <= 65535 ? 3 : 4;
+    }
+    return bytes;
+  }
+
+  // plugin/ui/connection.js
+  function createConnection(state2, installationToken2, { journal: journal2, safeLogText: safeLogText2, renderIndicator: renderIndicator2, important: important2, showVersions: showVersions2, showQuality: showQuality2 }) {
+    const status = document.getElementById("status");
+    const activity = document.getElementById("activity");
+    const connect = document.getElementById("connect");
+    const disconnect = document.getElementById("disconnect");
+    const filePlan2 = document.getElementById("file-plan");
+    const recovery = document.getElementById("recovery");
+    const recoveredResults = [], lateResults = [];
+    let recoveredBytes = 0;
+    let retryTimer;
+    let retryDelay = 1e3;
+    const pluginSessionId = typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36) + "-" + Math.random().toString(36).slice(2);
+    if (typeof setInterval === "function")
+      setInterval(() => {
+        if (state2.activeRequest) {
+          const seconds = Math.floor((Date.now() - state2.activeStartedAt) / 1e3);
+          activity.textContent = "\u0412\u044B\u043F\u043E\u043B\u043D\u044F\u0435\u0442\u0441\u044F: " + state2.activeCommand + " \xB7 " + seconds + " \u0441";
+          if (seconds >= 120 && recovery)
+            recovery.textContent = "\u041E\u043F\u0435\u0440\u0430\u0446\u0438\u044F \u0435\u0449\u0451 \u0432\u044B\u043F\u043E\u043B\u043D\u044F\u0435\u0442\u0441\u044F. \u041D\u0435 \u043F\u043E\u0432\u0442\u043E\u0440\u044F\u0439\u0442\u0435 \u0435\u0451; \u043E\u0441\u0442\u0430\u0432\u044C\u0442\u0435 \u043F\u043B\u0430\u0433\u0438\u043D \u043E\u0442\u043A\u0440\u044B\u0442\u044B\u043C \u0438 \u043F\u0440\u043E\u0432\u0435\u0440\u044C\u0442\u0435 get_operation.";
+          if (seconds >= 120 && state2.warnedOperation !== state2.activeRequest) {
+            state2.warnedOperation = state2.activeRequest;
+            important2("long-operation", "warning", "\u041E\u043F\u0435\u0440\u0430\u0446\u0438\u044F \u0435\u0449\u0451 \u0438\u0434\u0451\u0442", "\u041E\u043F\u0435\u0440\u0430\u0446\u0438\u044F \u0432\u044B\u043F\u043E\u043B\u043D\u044F\u0435\u0442\u0441\u044F \u0431\u043E\u043B\u044C\u0448\u0435 \u0434\u0432\u0443\u0445 \u043C\u0438\u043D\u0443\u0442. \u041D\u0435 \u043F\u043E\u0432\u0442\u043E\u0440\u044F\u0439\u0442\u0435 \u0435\u0451; \u043F\u0440\u043E\u0432\u0435\u0440\u044C\u0442\u0435 \u0435\u0451 \u0441\u0442\u0430\u0442\u0443\u0441 \u0432 MCP.");
+          }
+        }
+      }, 1e3);
+    if (installationToken2) {
+      document.getElementById("pairing").hidden = true;
+      document.getElementById("intro").textContent = "\u0410\u0432\u0442\u043E\u043C\u0430\u0442\u0438\u0447\u0435\u0441\u043A\u043E\u0435 \u043F\u043E\u0434\u043A\u043B\u044E\u0447\u0435\u043D\u0438\u0435 \u043A MCP \u043D\u0430 \u044D\u0442\u043E\u043C \u043A\u043E\u043C\u043F\u044C\u044E\u0442\u0435\u0440\u0435.";
+    }
+    function scheduleReconnect() {
+      if (!installationToken2 || state2.stopped || state2.activeRequest || retryTimer)
+        return;
+      retryTimer = setTimeout(() => {
+        retryTimer = void 0;
+        connectToBridge();
+      }, retryDelay);
+      retryDelay = Math.min(retryDelay * 2, 1e4);
+    }
+    function connectToBridge() {
+      const token = installationToken2 || document.getElementById("token").value.trim();
+      if (!/^[a-f0-9]{64}$/.test(token)) {
+        status.textContent = "\u0412\u0441\u0442\u0430\u0432\u044C\u0442\u0435 \u043F\u043E\u043B\u043D\u044B\u0439 pairingCode \u0438\u0437 get_connection";
+        return;
+      }
+      if (state2.activeRequest) {
+        status.textContent = "\u0414\u043E\u0436\u0434\u0438\u0442\u0435\u0441\u044C \u0437\u0430\u0432\u0435\u0440\u0448\u0435\u043D\u0438\u044F \u0442\u0435\u043A\u0443\u0449\u0435\u0439 \u043E\u043F\u0435\u0440\u0430\u0446\u0438\u0438";
+        return;
+      }
+      clearTimeout(retryTimer);
+      retryTimer = void 0;
+      if (state2.socket) {
+        const previous = state2.socket;
+        state2.socket = void 0;
+        previous.close();
+      }
+      const current = new WebSocket("ws://localhost:3055");
+      state2.socket = current;
+      state2.connectionState = "connecting";
+      renderIndicator2();
+      status.textContent = "\u041F\u043E\u0434\u043A\u043B\u044E\u0447\u0435\u043D\u0438\u0435\u2026";
+      connect.disabled = true;
+      disconnect.hidden = false;
+      current.onopen = () => current.send(JSON.stringify({ type: "hello", token, pluginSessionId, document: state2.documentInfo }));
+      current.onmessage = (event) => {
+        if (state2.socket !== current)
+          return;
+        let message;
+        try {
+          message = JSON.parse(event.data);
+        } catch (e) {
+          current.close();
+          return;
+        }
+        if (!message || typeof message !== "object") {
+          current.close();
+          return;
+        }
+        if (message.type === "ready") {
+          state2.authenticatedSocket = current;
+          state2.connectionState = "ready";
+          state2.serverVersion = message.serverVersion;
+          if (recovery)
+            recovery.textContent = "";
+          showVersions2();
+          retryDelay = 1e3;
+          status.textContent = "\u0421\u043E\u0435\u0434\u0438\u043D\u0435\u043D\u0438\u0435 \u0441 \u043B\u043E\u043A\u0430\u043B\u044C\u043D\u044B\u043C MCP \u0443\u0441\u0442\u0430\u043D\u043E\u0432\u043B\u0435\u043D\u043E.";
+          disconnect.hidden = false;
+          document.getElementById("token").value = "";
+          journal2("CONNECTED");
+          while (lateResults.length)
+            current.send(JSON.stringify(lateResults.shift()));
+          for (const result of recoveredResults)
+            current.send(JSON.stringify(__spreadProps(__spreadValues({}, result), { type: "recovered_result" })));
+        } else if (message.type === "result_ack") {
+          const index = recoveredResults.findIndex((result) => result.id === message.id);
+          if (index >= 0)
+            recoveredBytes -= JSON.stringify(recoveredResults.splice(index, 1)[0]).length * 2;
+        } else if (message.type === "command") {
+          if (state2.activeRequest === message.id)
+            return;
+          if (state2.activeRequest) {
+            current.send(JSON.stringify({ type: "result", id: message.id, error: "Plugin busy" }));
+            return;
+          }
+          state2.activeRequest = message.id;
+          state2.activeCommand = message.command;
+          state2.activeArgs = message.args;
+          state2.activeStartedAt = Date.now();
+          if (recovery)
+            recovery.textContent = "";
+          journal2("START", state2.activeCommand + " id=" + state2.activeRequest);
+          filePlan2.disabled = true;
+          state2.responseSocket = current;
+          activity.textContent = "\u0412\u044B\u043F\u043E\u043B\u043D\u044F\u0435\u0442\u0441\u044F: " + message.command;
+          parent.postMessage({ pluginMessage: message }, "*");
+        }
+      };
+      current.onclose = (event) => {
+        if (state2.socket !== current)
+          return;
+        const wasReady = state2.connectionState === "ready";
+        state2.connectionState = state2.stopped ? "offline" : "waiting";
+        if (!state2.stopped && (wasReady || state2.activeRequest))
+          important2("connection", "warning", "\u0421\u0432\u044F\u0437\u044C \u043F\u043E\u0442\u0435\u0440\u044F\u043D\u0430", state2.activeRequest ? "\u0421\u0432\u044F\u0437\u044C \u043F\u043E\u0442\u0435\u0440\u044F\u043D\u0430 \u0432\u043E \u0432\u0440\u0435\u043C\u044F \u043E\u043F\u0435\u0440\u0430\u0446\u0438\u0438. \u0414\u043E\u0436\u0434\u0438\u0442\u0435\u0441\u044C \u0440\u0435\u0437\u0443\u043B\u044C\u0442\u0430\u0442\u0430; \u043D\u0435 \u043F\u043E\u0432\u0442\u043E\u0440\u044F\u0439\u0442\u0435 \u0435\u0451." : "\u0421\u043E\u0435\u0434\u0438\u043D\u0435\u043D\u0438\u0435 \u0441 MCP \u043F\u043E\u0442\u0435\u0440\u044F\u043D\u043E. \u041F\u043B\u0430\u0433\u0438\u043D \u043F\u043E\u043F\u0440\u043E\u0431\u0443\u0435\u0442 \u043F\u043E\u0434\u043A\u043B\u044E\u0447\u0438\u0442\u044C\u0441\u044F \u0441\u043D\u043E\u0432\u0430.");
+        journal2("DISCONNECTED", "code=" + event.code + (state2.activeRequest ? " id=" + state2.activeRequest + " outcome=unknown" : ""));
+        status.textContent = "\u041E\u0442\u043A\u043B\u044E\u0447\u0435\u043D\u043E" + (event.reason ? ": " + event.reason : ". \u0412\u044B\u0437\u043E\u0432\u0438\u0442\u0435 get_connection \u0438 \u043F\u043E\u0434\u043A\u043B\u044E\u0447\u0438\u0442\u0435\u0441\u044C \u0441\u043D\u043E\u0432\u0430.");
+        connect.disabled = false;
+        disconnect.hidden = true;
+        if (event.code === 1008) {
+          state2.stopped = true;
+          state2.lastErrorCode = "CONNECTION_REJECTED";
+          important2("rejected", "error", "\u041F\u043E\u0434\u043A\u043B\u044E\u0447\u0435\u043D\u0438\u0435 \u043E\u0442\u043A\u043B\u043E\u043D\u0435\u043D\u043E", "\u041F\u043E\u0434\u043A\u043B\u044E\u0447\u0435\u043D\u0438\u0435 \u043E\u0442\u043A\u043B\u043E\u043D\u0435\u043D\u043E. \u041F\u0440\u043E\u0432\u0435\u0440\u044C\u0442\u0435, \u043D\u0435 \u043E\u0442\u043A\u0440\u044B\u0442\u0430 \u043B\u0438 \u0432\u0442\u043E\u0440\u0430\u044F \u043A\u043E\u043F\u0438\u044F \u043F\u043B\u0430\u0433\u0438\u043D\u0430.");
+          if (recovery)
+            recovery.textContent = "\u041F\u043E\u0434\u043A\u043B\u044E\u0447\u0435\u043D\u0438\u0435 \u043E\u0442\u043A\u043B\u043E\u043D\u0435\u043D\u043E. \u0417\u0430\u043A\u0440\u043E\u0439\u0442\u0435 \u0432\u0442\u043E\u0440\u0443\u044E \u043A\u043E\u043F\u0438\u044E \u043F\u043B\u0430\u0433\u0438\u043D\u0430; \u0435\u0441\u043B\u0438 \u043D\u0435 \u043F\u043E\u043C\u043E\u0433\u043B\u043E, \u043E\u0431\u043D\u043E\u0432\u0438\u0442\u0435 \u043B\u043E\u043A\u0430\u043B\u044C\u043D\u0443\u044E \u0443\u0441\u0442\u0430\u043D\u043E\u0432\u043A\u0443 \u0438 \u0437\u0430\u043F\u0443\u0441\u0442\u0438\u0442\u0435 Auto \u0441\u043D\u043E\u0432\u0430.";
+        }
+        if (installationToken2 && !state2.stopped) {
+          status.textContent = state2.activeRequest ? "\u0421\u0432\u044F\u0437\u044C \u043F\u043E\u0442\u0435\u0440\u044F\u043D\u0430. \u041E\u0436\u0438\u0434\u0430\u0435\u043C \u0437\u0430\u0432\u0435\u0440\u0448\u0435\u043D\u0438\u044F \u043E\u043F\u0435\u0440\u0430\u0446\u0438\u0438; \u043F\u043E\u0432\u0442\u043E\u0440\u043D\u043E \u043E\u043D\u0430 \u043D\u0435 \u043E\u0442\u043F\u0440\u0430\u0432\u043B\u044F\u0435\u0442\u0441\u044F." : "\u041E\u0436\u0438\u0434\u0430\u0435\u043C \u043B\u043E\u043A\u0430\u043B\u044C\u043D\u044B\u0439 MCP. \u041F\u043E\u0434\u043A\u043B\u044E\u0447\u0435\u043D\u0438\u0435 \u0432\u043E\u0441\u0441\u0442\u0430\u043D\u043E\u0432\u0438\u0442\u0441\u044F \u0430\u0432\u0442\u043E\u043C\u0430\u0442\u0438\u0447\u0435\u0441\u043A\u0438.";
+          disconnect.hidden = false;
+          scheduleReconnect();
+        }
+      };
+      current.onerror = () => {
+        if (state2.socket === current) {
+          status.textContent = "\u041D\u0435\u0442 \u0441\u043E\u0435\u0434\u0438\u043D\u0435\u043D\u0438\u044F \u0441 \u043B\u043E\u043A\u0430\u043B\u044C\u043D\u044B\u043C MCP \u043D\u0430 \u043F\u043E\u0440\u0442\u0443 3055";
+          journal2("SOCKET_ERROR");
+          state2.lastErrorCode = "SOCKET_ERROR";
+        }
+      };
+    }
+    connect.onclick = () => {
+      state2.stopped = false;
+      connectToBridge();
+    };
+    disconnect.onclick = () => {
+      var _a;
+      state2.stopped = true;
+      clearTimeout(retryTimer);
+      retryTimer = void 0;
+      (_a = state2.socket) == null ? void 0 : _a.close();
+      disconnect.hidden = true;
+      status.textContent = "\u041E\u0442\u043A\u043B\u044E\u0447\u0435\u043D\u043E";
+      state2.connectionState = "offline";
+      renderIndicator2();
+    };
+    function publishDocument() {
+      var _a;
+      if (state2.socket === state2.authenticatedSocket && ((_a = state2.socket) == null ? void 0 : _a.readyState) === WebSocket.OPEN)
+        state2.socket.send(JSON.stringify({ type: "document", document: state2.documentInfo }));
+      if (installationToken2 && !state2.socket && !state2.stopped)
+        connectToBridge();
+    }
+    function receiveResult(message) {
+      var _a, _b, _c;
+      if (message.type === "result" && state2.activeRequest && message.id === state2.activeRequest) {
+        if (jsonBytes(message) > MAX_RESULT_BYTES)
+          message = {
+            type: "result",
+            id: message.id,
+            error: "RESPONSE_TOO_LARGE: Read a smaller range or fewer fields. A write may already have completed; inspect the file before retrying."
+          };
+        const durationMs = Date.now() - state2.activeStartedAt;
+        const delivered = ((_a = state2.responseSocket) == null ? void 0 : _a.readyState) === WebSocket.OPEN;
+        journal2(delivered ? message.error ? "ERROR" : "DONE" : "LATE_RESULT", state2.activeCommand + " id=" + state2.activeRequest + " ms=" + durationMs + (message.error ? " " + safeLogText2(message.error) : " completed"));
+        if (/^[0-9a-f-]{36}:\d+$/.test(message.id) || !delivered) {
+          const bytes = JSON.stringify(message).length * 2;
+          if (bytes <= 16 * 1024 * 1024) {
+            while (recoveredResults.length && (recoveredResults.length >= 32 || recoveredBytes + bytes > 16 * 1024 * 1024))
+              recoveredBytes -= JSON.stringify(recoveredResults.shift()).length * 2;
+            recoveredResults.push(message);
+            recoveredBytes += bytes;
+          }
+        }
+        if (!delivered) {
+          lateResults.push({
+            type: "diagnostic",
+            event: "late_result",
+            id: state2.activeRequest,
+            command: state2.activeCommand,
+            durationMs,
+            failed: typeof message.error === "string",
+            error: message.error ? safeLogText2(message.error) : void 0
+          });
+          if (lateResults.length > 32)
+            lateResults.shift();
+        }
+        if (((_b = state2.responseSocket) == null ? void 0 : _b.readyState) === WebSocket.OPEN)
+          state2.responseSocket.send(JSON.stringify(message));
+        if (!message.error) {
+          try {
+            showQuality2(state2.activeCommand, message.result);
+          } catch (e) {
+            journal2("QUALITY_UI_ERROR");
+          }
+        } else if (document.getElementById("quality-action") && ["audit_design", "apply_changes", "preview_audit_fixes", "preview_design_fixes"].includes(state2.activeCommand))
+          document.getElementById("quality-action").textContent = "\u041E\u043F\u0435\u0440\u0430\u0446\u0438\u044F \u043D\u0435 \u0437\u0430\u0432\u0435\u0440\u0448\u0438\u043B\u0430\u0441\u044C \u0443\u0441\u043F\u0435\u0448\u043D\u043E. \u0420\u0435\u0437\u0443\u043B\u044C\u0442\u0430\u0442 \u0438\u0441\u043F\u0440\u0430\u0432\u043B\u0435\u043D\u0438\u044F \u043D\u0435 \u043F\u043E\u0434\u0442\u0432\u0435\u0440\u0436\u0434\u0451\u043D; \u043F\u0440\u043E\u0432\u0435\u0440\u044C\u0442\u0435 \u0441\u043B\u043E\u0438.";
+        state2.activeRequest = void 0;
+        state2.activeCommand = void 0;
+        state2.activeArgs = void 0;
+        filePlan2.disabled = false;
+        state2.responseSocket = void 0;
+        state2.lastErrorCode = message.error ? "PLUGIN_ERROR" : void 0;
+        if (message.error && recovery)
+          recovery.textContent = "\u041F\u0440\u043E\u0432\u0435\u0440\u044C\u0442\u0435 \u0437\u0430\u0442\u0440\u043E\u043D\u0443\u0442\u044B\u0435 \u0441\u043B\u043E\u0438 \u0438 get_operation. \u041D\u0435 \u043F\u043E\u0432\u0442\u043E\u0440\u044F\u0439\u0442\u0435 \u0441\u043E\u0437\u0434\u0430\u043D\u0438\u0435 \u0430\u0432\u0442\u043E\u043C\u0430\u0442\u0438\u0447\u0435\u0441\u043A\u0438; \u043F\u0440\u0438 \u0447\u0430\u0441\u0442\u0438\u0447\u043D\u043E\u043C \u0438\u0437\u043C\u0435\u043D\u0435\u043D\u0438\u0438 \u0438\u0441\u043F\u043E\u043B\u044C\u0437\u0443\u0439\u0442\u0435 Undo \u0432 Figma.";
+        activity.textContent = message.error ? "\u041E\u0448\u0438\u0431\u043A\u0430: " + message.error : "\u041E\u043F\u0435\u0440\u0430\u0446\u0438\u044F \u0437\u0430\u0432\u0435\u0440\u0448\u0435\u043D\u0430";
+        if (message.error)
+          important2("operation-error", "error", "\u041E\u0448\u0438\u0431\u043A\u0430 \xB7 \u043F\u043E\u0434\u0440\u043E\u0431\u043D\u043E\u0441\u0442\u0438", "\u041E\u043F\u0435\u0440\u0430\u0446\u0438\u044F \u0437\u0430\u0432\u0435\u0440\u0448\u0438\u043B\u0430\u0441\u044C \u0441 \u043E\u0448\u0438\u0431\u043A\u043E\u0439. \u041F\u0440\u043E\u0432\u0435\u0440\u044C\u0442\u0435 \u0437\u0430\u0442\u0440\u043E\u043D\u0443\u0442\u044B\u0435 \u0441\u043B\u043E\u0438 \u0438 \u0436\u0443\u0440\u043D\u0430\u043B \u043F\u0435\u0440\u0435\u0434 \u043F\u043E\u0432\u0442\u043E\u0440\u043E\u043C.");
+        renderIndicator2();
+        if (((_c = state2.socket) == null ? void 0 : _c.readyState) === WebSocket.CLOSED)
+          scheduleReconnect();
+      }
+    }
+    return { publishDocument, receiveResult };
+  }
+
+  // plugin/ui/images.js
   function base64FromBytes(bytes) {
-    const chunk = 0x8000;
+    const chunk = 32768;
     const parts = [];
     for (let offset = 0; offset < bytes.length; offset += chunk) {
       parts.push(String.fromCharCode(...bytes.subarray(offset, Math.min(offset + chunk, bytes.length))));
     }
-    return btoa(parts.join(''));
+    return btoa(parts.join(""));
   }
   async function normalizeImage(message) {
+    var _a;
     try {
-      const response = await fetch('data:' + (message.mimeType || 'application/octet-stream') + ';base64,' + message.base64);
+      const response = await fetch("data:" + (message.mimeType || "application/octet-stream") + ";base64," + message.base64);
       const blob = await response.blob();
       const bitmap = await createImageBitmap(blob);
       const scale = Math.min(1, 4096 / Math.max(bitmap.width, bitmap.height));
       const width = Math.max(1, Math.round(bitmap.width * scale));
       const height = Math.max(1, Math.round(bitmap.height * scale));
-      const canvas = document.createElement('canvas');
+      const canvas = document.createElement("canvas");
       canvas.width = width;
       canvas.height = height;
-      const context = canvas.getContext('2d');
-      if (!context) throw new Error('Canvas is unavailable in the Figma plugin UI');
+      const context = canvas.getContext("2d");
+      if (!context)
+        throw new Error("Canvas is unavailable in the Figma plugin UI");
       context.drawImage(bitmap, 0, 0, width, height);
-      bitmap.close?.();
-      const png = await new Promise((resolve, reject) => canvas.toBlob(value => value ? resolve(value) : reject(new Error('Canvas PNG encoding failed')), 'image/png'));
+      (_a = bitmap.close) == null ? void 0 : _a.call(bitmap);
+      const png = await new Promise((resolve, reject) => canvas.toBlob((value) => value ? resolve(value) : reject(new Error("Canvas PNG encoding failed")), "image/png"));
       const bytes = new Uint8Array(await png.arrayBuffer());
-      parent.postMessage({ pluginMessage: { type: 'decode-image-result', id: message.id, base64: base64FromBytes(bytes) } }, '*');
+      parent.postMessage({ pluginMessage: { type: "decode-image-result", id: message.id, base64: base64FromBytes(bytes) } }, "*");
     } catch (error) {
-      parent.postMessage({ pluginMessage: { type: 'decode-image-result', id: message.id,
-        error: error instanceof Error ? error.message : String(error) } }, '*');
+      parent.postMessage({ pluginMessage: {
+        type: "decode-image-result",
+        id: message.id,
+        error: error instanceof Error ? error.message : String(error)
+      } }, "*");
     }
   }
-  window.onmessage = event => {
-    // Figma Desktop can deliver plugin messages with a null event.source.
-    // Correlate results with the active request instead of checking Window identity.
-    const message = event.data?.pluginMessage;
-    if (!message) return;
-    if (message.type === 'presentation-state' && typeof message.compact === 'boolean') {
+
+  // plugin/ui/app.js
+  var state = { compact: true, connectionState: "waiting", stopped: false };
+  var { renderIndicator, important, acknowledge, displayMode, showVersions } = createPresentationPanel(state);
+  var { journal, safeLogText } = createDiagnosticsPanel(state, { important, renderIndicator });
+  var { showQuality } = createQualityPanel(state, { important });
+  var connection = createConnection(state, installationToken, { journal, safeLogText, renderIndicator, important, showVersions, showQuality });
+  var filePlan = document.getElementById("file-plan");
+  var pageBudget = document.getElementById("page-budget");
+  filePlan.onchange = () => parent.postMessage({ pluginMessage: { type: "set-plan", plan: filePlan.value } }, "*");
+  window.onmessage = (event) => {
+    var _a, _b;
+    let message = (_a = event.data) == null ? void 0 : _a.pluginMessage;
+    if (!message)
+      return;
+    if (message.type === "presentation-state" && typeof message.compact === "boolean") {
       displayMode(message.compact);
-      if (requestedMode === compact) {
-        requestedMode = undefined;
-        if (!compact) {
-          const content = document.getElementById('panel-content');
-          if (content) content.scrollTop = 0;
+      if (state.requestedMode === state.compact) {
+        state.requestedMode = void 0;
+        if (!state.compact) {
+          const content = document.getElementById("panel-content");
+          if (content)
+            content.scrollTop = 0;
           acknowledge();
         }
       }
       return;
     }
-    if (message.type === 'presentation-error') {
-      requestedMode = undefined;
-      journal('PRESENTATION_ERROR', message.error);
-      lastErrorCode = 'PRESENTATION_ERROR';
-      important('presentation', 'warning', 'Настройки окна', String(message.error)); return;
+    if (message.type === "presentation-error") {
+      state.requestedMode = void 0;
+      journal("PRESENTATION_ERROR", message.error);
+      state.lastErrorCode = "PRESENTATION_ERROR";
+      important("presentation", "warning", "\u041D\u0430\u0441\u0442\u0440\u043E\u0439\u043A\u0438 \u043E\u043A\u043D\u0430", String(message.error));
+      return;
     }
-    if (message.type === 'decode-image' && typeof message.id === 'string' && typeof message.base64 === 'string') {
+    if (message.type === "decode-image" && typeof message.id === "string" && typeof message.base64 === "string") {
       void normalizeImage(message);
       return;
     }
-    if (message.type === 'document') {
-      documentInfo = message.document;
+    if (message.type === "document") {
+      state.documentInfo = message.document;
       showVersions();
-      const capability = documentInfo?.capabilities;
+      const capability = (_b = state.documentInfo) == null ? void 0 : _b.capabilities;
       if (capability) {
         filePlan.value = capability.plan;
-        const limit = capability.effectivePageLimit === null ? 'без лимита по указанному тарифу' : 'предел ' + capability.effectivePageLimit;
-        pageBudget.textContent = 'Страниц: ' + capability.pageCount + '; ' + limit + '. ' +
-          (capability.planSource === 'figma_error' ? 'Ограничение подтверждено Figma.' : capability.plan === 'unknown' ? 'Тариф не определён; используем существующие страницы.' : 'Тариф указан вручную для этого файла.');
+        const limit = capability.effectivePageLimit === null ? "\u0431\u0435\u0437 \u043B\u0438\u043C\u0438\u0442\u0430 \u043F\u043E \u0443\u043A\u0430\u0437\u0430\u043D\u043D\u043E\u043C\u0443 \u0442\u0430\u0440\u0438\u0444\u0443" : "\u043F\u0440\u0435\u0434\u0435\u043B " + capability.effectivePageLimit;
+        pageBudget.textContent = "\u0421\u0442\u0440\u0430\u043D\u0438\u0446: " + capability.pageCount + "; " + limit + ". " + (capability.planSource === "figma_error" ? "\u041E\u0433\u0440\u0430\u043D\u0438\u0447\u0435\u043D\u0438\u0435 \u043F\u043E\u0434\u0442\u0432\u0435\u0440\u0436\u0434\u0435\u043D\u043E Figma." : capability.plan === "unknown" ? "\u0422\u0430\u0440\u0438\u0444 \u043D\u0435 \u043E\u043F\u0440\u0435\u0434\u0435\u043B\u0451\u043D; \u0438\u0441\u043F\u043E\u043B\u044C\u0437\u0443\u0435\u043C \u0441\u0443\u0449\u0435\u0441\u0442\u0432\u0443\u044E\u0449\u0438\u0435 \u0441\u0442\u0440\u0430\u043D\u0438\u0446\u044B." : "\u0422\u0430\u0440\u0438\u0444 \u0443\u043A\u0430\u0437\u0430\u043D \u0432\u0440\u0443\u0447\u043D\u0443\u044E \u0434\u043B\u044F \u044D\u0442\u043E\u0433\u043E \u0444\u0430\u0439\u043B\u0430.");
       }
-      if (socket === authenticatedSocket && socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'document', document: documentInfo }));
-      if (installationToken && !socket && !stopped) connectToBridge();
+      connection.publishDocument();
     }
-    if (message.type === 'focus-result') {
-      const field = document.getElementById('quality-focus-status');
-      if (field) field.textContent = message.error || 'Слой выделен в Figma.';
+    if (message.type === "focus-result") {
+      const field = document.getElementById("quality-focus-status");
+      if (field)
+        field.textContent = message.error || "\u0421\u043B\u043E\u0439 \u0432\u044B\u0434\u0435\u043B\u0435\u043D \u0432 Figma.";
       return;
     }
-    if (message.type === 'policy-error') { journal('POLICY_ERROR', message.error); important('policy', 'warning', 'Проверьте тариф', 'Не удалось изменить настройку тарифа. Подробности ниже.'); pageBudget.textContent = message.error; parent.postMessage({ pluginMessage: { type: 'init' } }, '*'); }
-    if (message.type === 'result' && activeRequest && message.id === activeRequest) {
-      const durationMs = Date.now() - activeStartedAt;
-      const delivered = responseSocket?.readyState === WebSocket.OPEN;
-      journal(delivered ? (message.error ? 'ERROR' : 'DONE') : 'LATE_RESULT', activeCommand + ' id=' + activeRequest + ' ms=' + durationMs + (message.error ? ' ' + safeLogText(message.error) : ' completed'));
-      if (/^[0-9a-f-]{36}:\d+$/.test(message.id) || !delivered) {
-        const bytes = JSON.stringify(message).length * 2;
-        if (bytes <= 16 * 1024 * 1024) {
-          while (recoveredResults.length && (recoveredResults.length >= 32 || recoveredBytes + bytes > 16 * 1024 * 1024)) recoveredBytes -= JSON.stringify(recoveredResults.shift()).length * 2;
-          recoveredResults.push(message); recoveredBytes += bytes;
-        }
-      }
-      if (!delivered) {
-        lateResults.push({ type: 'diagnostic', event: 'late_result', id: activeRequest,
-          command: activeCommand, durationMs, failed: typeof message.error === 'string', error: message.error ? safeLogText(message.error) : undefined });
-        if (lateResults.length > 32) lateResults.shift();
-      }
-      if (responseSocket?.readyState === WebSocket.OPEN) responseSocket.send(JSON.stringify(message));
-      if (!message.error) { try { showQuality(activeCommand, message.result); } catch { journal('QUALITY_UI_ERROR'); } }
-      else if (document.getElementById('quality-action') && ['audit_design', 'apply_changes', 'preview_audit_fixes', 'preview_design_fixes'].includes(activeCommand))
-        document.getElementById('quality-action').textContent = 'Операция не завершилась успешно. Результат исправления не подтверждён; проверьте слои.';
-      activeRequest = undefined;
-      activeCommand = undefined;
-      activeArgs = undefined;
-      filePlan.disabled = false;
-      responseSocket = undefined;
-      lastErrorCode = message.error ? 'PLUGIN_ERROR' : undefined;
-      if (message.error && recovery) recovery.textContent = 'Проверьте затронутые слои и get_operation. Не повторяйте создание автоматически; при частичном изменении используйте Undo в Figma.';
-      activity.textContent = message.error ? 'Ошибка: ' + message.error : 'Операция завершена';
-      if (message.error) important('operation-error', 'error', 'Ошибка · подробности', 'Операция завершилась с ошибкой. Проверьте затронутые слои и журнал перед повтором.');
-      renderIndicator();
-      if (socket?.readyState === WebSocket.CLOSED) scheduleReconnect();
+    if (message.type === "policy-error") {
+      journal("POLICY_ERROR", message.error);
+      important("policy", "warning", "\u041F\u0440\u043E\u0432\u0435\u0440\u044C\u0442\u0435 \u0442\u0430\u0440\u0438\u0444", "\u041D\u0435 \u0443\u0434\u0430\u043B\u043E\u0441\u044C \u0438\u0437\u043C\u0435\u043D\u0438\u0442\u044C \u043D\u0430\u0441\u0442\u0440\u043E\u0439\u043A\u0443 \u0442\u0430\u0440\u0438\u0444\u0430. \u041F\u043E\u0434\u0440\u043E\u0431\u043D\u043E\u0441\u0442\u0438 \u043D\u0438\u0436\u0435.");
+      pageBudget.textContent = message.error;
+      parent.postMessage({ pluginMessage: { type: "init" } }, "*");
     }
+    connection.receiveResult(message);
   };
-  window.onerror = (_message, _source, _line, _column, error) => journal('UI_ERROR', error?.message ?? _message);
-  window.onunhandledrejection = event => journal('UI_REJECTION', event.reason?.message ?? event.reason);
-  parent.postMessage({ pluginMessage: { type: 'init' } }, '*');
+  window.onerror = (_message, _source, _line, _column, error) => {
+    var _a;
+    return journal("UI_ERROR", (_a = error == null ? void 0 : error.message) != null ? _a : _message);
+  };
+  window.onunhandledrejection = (event) => {
+    var _a, _b;
+    return journal("UI_REJECTION", (_b = (_a = event.reason) == null ? void 0 : _a.message) != null ? _b : event.reason);
+  };
+  parent.postMessage({ pluginMessage: { type: "init" } }, "*");
+})();
+
 </script>
 </html>

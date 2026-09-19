@@ -50,7 +50,7 @@ test('geometry uses parent-relative transforms, skips scrolling axes and hidden 
   assert.deepEqual(codes(report), []);
   assert.equal(report.coverage.hiddenSubtrees, 1);
   assert.equal(report.coverage.checked, 3);
-  outside.relativeTransform[0][2] = 150;
+  outside.relativeTransform = [[1, 0, 150], [0, 1, 180]];
   report = await audit(h, frame);
   assert.equal(report.findings[0].nodeId, outside.id);
   assert.equal(report.findings.length, 1);

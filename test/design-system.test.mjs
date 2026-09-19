@@ -160,3 +160,45 @@ test('local token updates avoid ID lookups and do not reuse removed variables ac
   h.variables.get(id).remove();
   assert.match((await h.call('set_variable', { variableId: id, value: '#ffffff' })).error, /Local variable not found/);
 });
+
+test('design resources paginate independently beyond 500 with token-name and collection filters', async () => {
+  const h = pluginHarness();
+  const collection = h.figma.variables.createVariableCollection('LargeSystem');
+  const other = h.figma.variables.createVariableCollection('Other');
+  for (let i = 0; i < 501; i++) {
+    h.figma.variables.createVariable('color/token-' + i, collection, 'COLOR');
+    const style = h.figma.createTextStyle();
+    style.name = 'LargeSystem/type-' + i;
+  }
+  h.figma.variables.createVariable('color/token-500', other, 'COLOR');
+  const first = (await h.call('get_design_system', { prefix: 'LargeSystem', limit: 500 })).result;
+  assert.equal(first.variables.length, 500);
+  assert.equal(first.textStyles.length, 500);
+  assert.equal(first.pagination.variables.nextOffset, 500);
+  assert.equal(first.pagination.collections.nextOffset, null);
+  const second = (await h.call('get_design_system', { prefix: 'LargeSystem', limit: 500,
+    offsets: { variables: 500, textStyles: 500, collections: 1 }, revision: first.revision })).result;
+  assert.equal(second.variables.length, 1);
+  assert.equal(second.textStyles.length, 1);
+  assert.equal(second.collections.length, 0);
+  assert.equal(second.truncated, false);
+  assert.equal(new Set([...first.variables, ...second.variables].map(v => v.id)).size, 501);
+  const filtered = (await h.call('get_design_system', { collectionId: collection.id, variableNamePrefix: 'color/token-500' })).result;
+  assert.equal(filtered.variables.length, 1);
+  assert.equal(filtered.variables[0].name, 'color/token-500');
+  assert.equal(filtered.variables[0].collectionId, collection.id);
+});
+
+test('design pagination detects resource/filter changes and requires the first revision', async () => {
+  const h = pluginHarness();
+  const a = h.figma.variables.createVariableCollection('A');
+  h.figma.variables.createVariableCollection('B');
+  const first = (await h.call('get_design_system', { limit: 1 })).result;
+  assert.match((await h.call('get_design_system', { offsets: { collections: 1 } })).error, /PAGINATION_REVISION_REQUIRED/);
+  assert.match((await h.call('get_design_system', { prefix: 'B', revision: first.revision })).error, /DESIGN_SYSTEM_CHANGED/);
+  a.name = 'Renamed';
+  assert.match((await h.call('get_design_system', { offsets: { collections: 1 }, revision: first.revision })).error, /DESIGN_SYSTEM_CHANGED/);
+  const fresh = (await h.call('get_design_system', { limit: 1 })).result;
+  h.figma.variables.createVariable('New', a, 'FLOAT');
+  assert.match((await h.call('get_design_system', { offsets: { collections: 1 }, revision: fresh.revision })).error, /DESIGN_SYSTEM_CHANGED/);
+});

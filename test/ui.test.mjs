@@ -273,3 +273,24 @@ test('failed expansion leaves the details hidden and the error unread until resi
   assert.equal(h.elements['panel-content'].hidden, false);
   assert.equal(h.elements.indicator.className, 'ready');
 });
+
+test('oversized Unicode results return a bounded error without disconnecting or replaying edits', () => {
+  const h = automaticUI();
+  const socket = h.sockets[0];
+  socket.receive({ type: 'ready' });
+  const id = '11111111-1111-1111-1111-111111111111:1';
+  socket.receive({ type: 'command', id, command: 'create_scene', args: {} });
+  h.reply({ type: 'result', id, result: { text: '🙂'.repeat(4 * 1024 * 1024) } });
+  const error = socket.sent.find(message => message.id === id);
+  assert.match(error.error, /RESPONSE_TOO_LARGE/);
+  assert.match(error.error, /may already have completed/);
+  assert.ok(Buffer.byteLength(JSON.stringify(error)) < 1024);
+  assert.equal(socket.readyState, 1);
+  assert.equal(h.commands.filter(message => message.type === 'command').length, 1);
+  socket.close(1006);
+  h.tick();
+  h.sockets[1].receive({ type: 'ready' });
+  const recovered = h.sockets[1].sent.find(message => message.type === 'recovered_result');
+  assert.equal(recovered.id, id);
+  assert.match(recovered.error, /RESPONSE_TOO_LARGE/);
+});

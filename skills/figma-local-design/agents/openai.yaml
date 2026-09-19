@@ -1,4 +1,7 @@
 interface:
   display_name: "Figma Local Design"
-  short_description: "Макеты, style guide и UI-правила через локальный MCP"
+  short_description: "Макеты, стайл-гайды и перенос дизайна в код через Figma"
   default_prompt: "Используй $figma-local-design: создай style guide и макет с учётом правил проекта."
+
+policy:
+  allow_implicit_invocation: true

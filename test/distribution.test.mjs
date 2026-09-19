@@ -92,7 +92,7 @@ test('standalone CLI resolves only its own package policy, never cwd or installa
 
 test('all package channels keep identical design behavior without a private overlay', async t => {
   const root = await fixture(t);
-  for (const name of ['scripts', 'skills']) await cp(name, join(root, name), { recursive: true });
+  for (const name of ['scripts', 'skills', 'src']) await cp(name, join(root, name), { recursive: true });
   const built = spawnSync(process.execPath, [join(root, 'scripts/package-skillstore.mjs')], { encoding: 'utf8' });
   assert.equal(built.status, 0, built.stderr);
   const canonical = join(root, 'skills/figma-local-design');

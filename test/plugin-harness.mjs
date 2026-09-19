@@ -57,8 +57,18 @@ export function pluginHarness({ clock = Date } = {}) {
         },
       });
       Object.defineProperty(result, 'relativeTransform', {
-        get() { return this._relativeTransform ?? [[1, 0, this.x], [0, 1, this.y]]; },
-        set(value) { this._relativeTransform = value; },
+        get() {
+          const matrix = this._relativeTransform ?? [[1, 0, 0], [0, 1, 0]];
+          return [[matrix[0][0], matrix[0][1], this.x], [matrix[1][0], matrix[1][1], this.y]];
+        },
+        set(value) { this._relativeTransform = value; this.x = value[0][2]; this.y = value[1][2]; },
+      });
+      Object.defineProperty(result, 'absoluteTransform', {
+        get() {
+          const [[a,c,x],[b,d,y]] = this.parent?.absoluteTransform ?? [[1,0,0],[0,1,0]];
+          const [[e,g,u],[f,h,v]] = this.relativeTransform;
+          return [[a*e+c*f, a*g+c*h, a*u+c*v+x], [b*e+d*f, b*g+d*h, b*u+d*v+y]];
+        },
       });
       if (type !== 'ELLIPSE') Object.assign(result, { cornerRadius: 0,
         topLeftRadius: 0, topRightRadius: 0, bottomLeftRadius: 0, bottomRightRadius: 0 });

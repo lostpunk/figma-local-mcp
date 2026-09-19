@@ -165,3 +165,24 @@ test('lost write stays unknown and only its original plugin session can recover 
   assert.deepEqual(bridge.getOperation(operationId).result, { id: '3:4' });
   assert.ok(events.includes('operation_recovered'));
 });
+
+test('large plugin reads fit the transport and leave the connection usable', async t => {
+  const { pluginHarness } = await import('./plugin-harness.mjs');
+  const h = pluginHarness();
+  const frame = h.node('FRAME', 'Large', h.page);
+  for (let i = 0; i < 900; i++) h.node('TEXT', String(i), frame).characters = 'я'.repeat(10000);
+  const bridge = await createBridge({ port: 0 });
+  t.after(() => bridge.close());
+  const socket = await pair(bridge);
+  socket.on('message', async raw => {
+    const command = JSON.parse(raw);
+    if (command.type !== 'command') return;
+    const response = await h.call(command.command, command.args);
+    socket.send(JSON.stringify({ ...response, id: command.id }));
+  });
+  const result = await bridge.request('get_node', { nodeId: frame.id, depth: 1, maxNodes: 1000 });
+  assert.ok(Buffer.byteLength(JSON.stringify(result)) <= 1024 * 1024);
+  assert.equal(result.childrenTruncated, true);
+  assert.equal(bridge.info().connected, true);
+  assert.equal((await bridge.request('get_document', {})).name, 'Test file');
+});

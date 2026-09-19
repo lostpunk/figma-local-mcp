@@ -52,6 +52,15 @@ test('portable archives exclude local SkillStore metadata', async t => {
   const contaminated = spawnSync('python3', [join(root, 'scripts/package.py')], { cwd: root, encoding: 'utf8' });
   assert.notEqual(contaminated.status, 0);
   assert.match(contaminated.stderr, /Forbidden/);
+  await rm(join(root, 'skills/figma-local-design/references/distribution-profile.md'));
+  // A mistaken edit to the common inventory must not silently produce an uninstallable release.
+  const layoutPath = join(root, 'src/package-layout.json');
+  const layout = JSON.parse(await readFile(layoutPath, 'utf8'));
+  layout.runtime.directories = layout.runtime.directories.filter(name => name !== 'plugin');
+  await writeFile(layoutPath, JSON.stringify(layout));
+  const incomplete = spawnSync('python3', [join(root, 'scripts/package.py')], { cwd: root, encoding: 'utf8' });
+  assert.notEqual(incomplete.status, 0);
+  assert.match(incomplete.stderr, /missing runnable Figma integration files/);
 });
 
 test('SkillStore package removes deep external references from generated files only', async t => {

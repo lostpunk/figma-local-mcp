@@ -3,8 +3,7 @@ import { lstat, readFile, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 export const hash = data => createHash('sha256').update(data).digest('hex');
 export const skillPrefix = 'skills/figma-local-design/';
-export const isRuntimeFile = name => name === 'package.json' || /^(runtime|plugin|src)\//.test(name)
-  || ['scripts/setup.mjs', 'scripts/local-plugin.mjs', 'scripts/asset-access.mjs'].includes(name);
+export { isRuntimeFile } from '../src/package-layout.mjs';
 export async function treeFiles(root, prefix = '') {
   const result = [];
   for (const name of (await readdir(root)).sort()) {

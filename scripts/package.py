@@ -9,14 +9,20 @@ import zipfile
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 VERSION = json.loads((ROOT / 'package.json').read_text())['version']
-FILES = ['.codex-plugin/plugin.json', '.mcp.json', '.gitignore', '.gitattributes', 'CHANGELOG.md', 'package.json',
-         'package-lock.json', 'build.mjs', 'tsconfig.json', 'README.md',
-         'INSTALL.md', 'CUSTOMIZE.md', 'CONTRIBUTING.md', 'codex.example.toml', 'LICENSE']
-DIRECTORIES = ['src', 'plugin', 'runtime', 'scripts', 'test', 'examples']
+LAYOUT = json.loads((ROOT / 'src/package-layout.json').read_text())
+if LAYOUT.get('format') != 1:
+    raise ValueError('Unsupported package layout')
+for section in ('runtime', 'skill', 'source'):
+    for kind in ('files', 'directories'):
+        entries = LAYOUT[section][kind]
+        if not isinstance(entries, list) or any(not isinstance(p, str) or not p or '\\' in p or ':' in p
+                                               or any(part in ('', '.', '..') for part in p.split('/')) for p in entries):
+            raise ValueError('Unsafe package layout')
+FILES = LAYOUT['runtime']['files'] + LAYOUT['source']['files']
+DIRECTORIES = LAYOUT['runtime']['directories'] + LAYOUT['source']['directories']
 SKILL_ROOT = ROOT / 'skills' / 'figma-local-design'
-SKILL_FILES = ['SKILL.md', 'version.json', 'agents/openai.yaml', 'package.json',
-               'scripts/install.mjs', 'scripts/setup.mjs', 'scripts/local-plugin.mjs', 'scripts/asset-access.mjs', 'scripts/project-rules.mjs', 'scripts/onboarding.mjs']
-SKILL_DIRECTORIES = ['assets', 'references', 'runtime', 'plugin', 'src']
+SKILL_FILES = LAYOUT['runtime']['files'] + LAYOUT['skill']['files']
+SKILL_DIRECTORIES = LAYOUT['runtime']['directories'] + LAYOUT['skill']['directories']
 FORBIDDEN_SKILL_PARTS = {'.github', '.git', '.skillstore-meta.json', 'installation.json',
                          'distribution-profile.md', 'private-distributions'}
 PRIVATE_PARTS = {'generated', '.env', '.skill-install.json', 'pairing-key.json', 'asset-access.json', '.figma-design.json'}
@@ -124,6 +130,19 @@ def verify():
             raise ValueError(f'Checksum file mismatch: {name}')
         expected = {prefix + '/' + p.relative_to(base).as_posix(): p for p in files}
         with zipfile.ZipFile(target) as archive:
+            # Independent delivery contract: do not derive these checks from LAYOUT.
+            names = {entry.removeprefix(prefix + '/') for entry in archive.namelist()}
+            if not {'package.json', 'runtime/server.mjs', 'plugin/code.js', 'plugin/ui.html', 'plugin/manifest.json'} <= names:
+                raise ValueError('Archive is missing runnable Figma integration files')
+            for entry in names:
+                parts = pathlib.PurePosixPath(entry).parts
+                if any(part in PRIVATE_PARTS or part.startswith('.env.') or part in {'.idea', 'node_modules', '.git'} for part in parts):
+                    raise ValueError(f'Private or development state in archive: {entry}')
+            if prefix == 'figma-local-design':
+                if not {'SKILL.md', 'scripts/install.mjs', 'src/package-layout.json', 'src/package-layout.mjs'} <= names:
+                    raise ValueError('Standalone skill is missing its installation contract')
+                if any('test' in pathlib.PurePosixPath(entry).parts for entry in names):
+                    raise ValueError('Tests must not be shipped in the standalone skill')
             if len(archive.namelist()) != len(expected) or set(archive.namelist()) != set(expected):
                 raise ValueError(f'Unexpected archive entries: {name}')
             for entry, path in expected.items():

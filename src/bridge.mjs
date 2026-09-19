@@ -1,3 +1,4 @@
+import responseLimits from './response-limits.json' with { type: 'json' };
 import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { createOperations } from './operations.mjs';
 import { createOperationHistory } from './operation-history.mjs';
@@ -20,7 +21,7 @@ export async function createBridge({ port = 3055, timeoutMs = 120000, installati
   const log = (level, event, fields) => diagnostics?.record(level, event, fields);
   if (typeof installationToken !== 'string' || !/^[a-f0-9]{64}$/.test(installationToken)) throw new Error('Invalid installation token. Run scripts/setup.mjs and import the generated plugin.');
   const token = installationToken;
-  const wss = new WebSocketServer({ host: '127.0.0.1', port, maxPayload: 16 * 1024 * 1024 });
+  const wss = new WebSocketServer({ host: '127.0.0.1', port, maxPayload: responseLimits.transportBytes });
   await new Promise((resolve, reject) => {
     wss.once('listening', resolve);
     wss.once('error', reject);
