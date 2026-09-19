@@ -19,4 +19,16 @@ Before sending bytes, the server resolves the file's real path, checks it belong
 
 SVG supports static geometry, gradients, masks and local `#id` references. Attribute namespaces and style properties use a restricted subset. Duplicate/missing IDs, reference cycles and expansion above 20,000 elements are rejected in addition to the 1 MiB / 5,000 source elements / 64 nesting-level limits. Unsupported input should be simplified/exported as static vectors or imported as a raster image, rather than disabling validation.
 
+## Export destinations
+
+`export_assets` uses the independent `get_connection.assetAccess.allowedExportRoots` list. Existing version-1 policies without that field deny exports. A read/import permission does not grant write/export access, and enabling exports does not enable file imports.
+
+```bash
+node <runtime>/scripts/asset-access.mjs --allow-export /absolute/project/assets
+node <runtime>/scripts/asset-access.mjs --remove-export /absolute/project/assets
+node <runtime>/scripts/asset-access.mjs --clear-export
+```
+
+Choose only the user's intended project resource directory. `--clear` still clears import roots only; `--clear-export` clears export roots. Grants and revocations apply without a restart, including checks between batch items. The export creates a fresh subdirectory and uses exclusive file creation; it checks canonical paths and directory identity before writes. It never uses a Figma layer name or plugin-returned path as a filesystem path. These checks are not an OS sandbox against a malicious process running as the same user. See [export-assets.md](export-assets.md) for sources, limits and recovery.
+
 The server requires the installation key created by setup, but never includes it in MCP responses. For an old manual plugin, run setup and import `generated/figma-plugin/manifest.json`; do not read or paste the key through chat. The automatic plugin still authenticates every connection, including Figma's opaque `null` origin.

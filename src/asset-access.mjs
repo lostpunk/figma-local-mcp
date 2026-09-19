@@ -12,32 +12,35 @@ const within = (root, path) => {
 export async function readAssetAccess(packageRoot) {
   let raw;
   try { raw = await readFile(policyPath(packageRoot), 'utf8'); }
-  catch (error) { if (error.code === 'ENOENT') return { version: 1, allowedRoots: [] }; throw error; }
+  catch (error) { if (error.code === 'ENOENT') return { version: 1, allowedRoots: [], allowedExportRoots: [] }; throw error; }
   if (Buffer.byteLength(raw) > 65536) throw new Error('Invalid asset-access policy: exceeds 64 KiB');
   const policy = JSON.parse(raw);
-  if (policy?.version !== 1 || !Array.isArray(policy.allowedRoots) || policy.allowedRoots.length > 32 ||
-      !policy.allowedRoots.every(path => typeof path === 'string' && isAbsolute(path) && path.length <= 4096)) {
+  const validRoots = roots => Array.isArray(roots) && roots.length <= 32 &&
+    roots.every(path => typeof path === 'string' && isAbsolute(path) && path.length <= 4096);
+  if (policy?.version !== 1 || !validRoots(policy.allowedRoots) || !validRoots(policy.allowedExportRoots === undefined ? [] : policy.allowedExportRoots)) {
     throw new Error('Invalid asset-access policy; configure it with scripts/asset-access.mjs');
   }
-  return { version: 1, allowedRoots: [...new Set(policy.allowedRoots)] };
+  return { version: 1, allowedRoots: [...new Set(policy.allowedRoots)], allowedExportRoots: [...new Set(policy.allowedExportRoots ?? [])] };
 }
 
 export async function updateAssetAccess(packageRoot, action, directory) {
   const policy = await readAssetAccess(packageRoot);
-  if (!['allow', 'remove', 'clear'].includes(action)) throw new Error('Unknown asset-access action');
-  if (action === 'clear') policy.allowedRoots = [];
+  if (!['allow', 'remove', 'clear', 'allow-export', 'remove-export', 'clear-export'].includes(action)) throw new Error('Unknown asset-access action');
+  const key = action.endsWith('-export') ? 'allowedExportRoots' : 'allowedRoots';
+  action = action.replace(/-export$/, '');
+  if (action === 'clear') policy[key] = [];
   else {
     if (!directory || !isAbsolute(directory)) throw new Error('Use an absolute asset directory');
     if (action === 'allow') {
       const canonical = await realpath(directory);
       if (!(await stat(canonical)).isDirectory()) throw new Error('Asset root must be a directory');
-      if (!policy.allowedRoots.includes(canonical)) policy.allowedRoots.push(canonical);
-      if (policy.allowedRoots.length > 32) throw new Error('At most 32 asset directories are supported');
+      if (!policy[key].includes(canonical)) policy[key].push(canonical);
+      if (policy[key].length > 32) throw new Error('At most 32 asset directories are supported');
     } else {
       // A deleted directory must still be removable from the policy.
       const candidates = new Set([resolve(directory)]);
       try { candidates.add(await realpath(directory)); } catch (error) { if (error.code !== 'ENOENT') throw error; }
-      policy.allowedRoots = policy.allowedRoots.filter(path => !candidates.has(path));
+      policy[key] = policy[key].filter(path => !candidates.has(path));
     }
   }
   await mkdir(join(packageRoot, 'generated'), { recursive: true, mode: 0o700 });

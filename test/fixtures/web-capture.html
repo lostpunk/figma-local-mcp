@@ -1,0 +1,15 @@
+<!doctype html><meta charset="utf-8"><title>Web capture fixture</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#eef2f6;font:16px Arial,sans-serif;color:#172334}
+#fixture{width:760px;margin:24px;background:#fff;border-radius:16px;overflow:hidden;padding:24px}
+header{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:24px}
+h1{margin:0;font-size:28px}.catalog{display:flex;gap:16px}.card{width:220px;border:1px solid #c5cfda;border-radius:8px;padding:12px}
+p{line-height:24px}img{width:64px;height:64px;object-fit:contain}.card button{padding:8px 16px;border:0;background:#2255dd;color:#fff;border-radius:6px}
+.badge::before{content:'•';color:red}.hidden{display:none}.decorated{background:linear-gradient(#eef,#fff);box-shadow:0 2px 4px #aaa}
+</style>
+<main id="fixture"><header><h1>Sample shop</h1><span>3 items</span></header>
+<div class="catalog"><article class="card"><img id="localImage" src="/image.png"><h2>Basic shirt</h2><p>Simple <strong>editable</strong> text.</p><button>View item</button></article>
+<article class="card decorated"><img id="remoteImage" src="REMOTE_IMAGE"><h2>Second item</h2><p class="badge">Capture warnings</p><button>View item</button></article></div>
+<p id="wrapped">This long sentence wraps across the available width and keeps its text as editable content for the import test. Some font metrics may differ.</p>
+<input type="password" value="PASSWORD_SENTINEL"><textarea>FORM_SENTINEL</textarea><div contenteditable="true">EDITABLE_SENTINEL</div>
+<p style="-webkit-text-security:disc">MASKED_SENTINEL</p><p class="hidden">HIDDEN_SENTINEL</p><script>window.captureSecret='SCRIPT_SENTINEL';</script></main>

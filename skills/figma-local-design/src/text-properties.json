@@ -1,0 +1,6 @@
+[
+  "fontName", "fontSize", "fontWeight", "textCase", "textDecoration",
+  "lineHeight", "letterSpacing", "fills", "textStyleId", "fillStyleId",
+  "listOptions", "indentation", "paragraphIndent", "paragraphSpacing",
+  "listSpacing", "hyperlink", "boundVariables"
+]

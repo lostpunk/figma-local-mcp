@@ -10,5 +10,5 @@ for (const markerFormat of ['figma-local-install-v1', 'figma-local-install-v2'])
   test(`upgrade compatibility (${markerFormat}): rollback, private state, imported manifest and same-version repair`, async () => {
     const result = await checkUpgrade({ oldRoot: root, newRoot: root, markerFormat });
     assert.equal(result.rollback, 'passed'); assert.equal(result.sameVersionRepair, 'passed');
-    assert.equal(result.historyRecovery, 'passed'); assert.equal(result.tools, 37);
+    assert.equal(result.historyRecovery, 'passed'); assert.equal(result.tools, 48);
   });

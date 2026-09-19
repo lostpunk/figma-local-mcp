@@ -46,6 +46,7 @@ test('setup generates private automatic plugin and preserves its key across upda
   const manual = JSON.parse(await readFile(join(root, 'plugin/manifest.json'), 'utf8'));
   assert.notEqual(manifest.id, manual.id);
   assert.equal(manifest.name, 'Figma Local MCP Auto');
+  assert.ok(manifest.permissions.includes('teamlibrary'));
   assert.ok((await readFile(htmlPath, 'utf8')).includes(`const installationToken = '${key}';`));
   assert.ok(!(await readFile(join(root, 'plugin/ui.html'), 'utf8')).includes(key));
   const next = run();

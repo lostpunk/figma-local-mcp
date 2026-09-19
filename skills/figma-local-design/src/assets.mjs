@@ -1,5 +1,6 @@
 import { readAllowedAsset } from './asset-access.mjs';
 import { SaxesParser } from 'saxes';
+import { webSnapshotSchema } from './web-snapshot-schema.mjs';
 
 export const IMAGE_LIMIT = 8 * 1024 * 1024;
 export const SVG_LIMIT = 1024 * 1024;
@@ -96,6 +97,12 @@ export function validateSvg(svg) {
 }
 
 export async function prepareAsset(command, args, allowedRoots = []) {
+  if (command === 'import_web_snapshot') {
+    const { filePath, snapshot, ...options } = args;
+    if (Number(filePath !== undefined) + Number(snapshot !== undefined) !== 1) throw new Error('Provide exactly one source: snapshot or filePath');
+    const data = filePath === undefined ? snapshot : JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(await readAllowedAsset(filePath, 4 * 1024 * 1024, allowedRoots)));
+    return { ...options, snapshot: webSnapshotSchema.parse(data) };
+  }
   if (command !== 'import_image' && command !== 'import_svg') return args;
   const inline = command === 'import_image' ? args.dataBase64 : args.svg;
   if (Number(args.filePath !== undefined) + Number(inline !== undefined) !== 1) {

@@ -2,6 +2,46 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { pluginHarness } from './plugin-harness.mjs';
 
+for (const command of ['create_node', 'create_scene']) {
+  test(`${command} retains explicit text sizing with initial dimensions`, async () => {
+    for (const mode of ['HEIGHT', 'WIDTH_AND_HEIGHT', 'NONE']) {
+      const h = pluginHarness();
+      const props = { textAutoResize: mode, characters: 'First line\nSecond line',
+        width: 240, height: 20, fontSize: 16, lineHeight: { unit: 'PIXELS', value: 24 } };
+      const reply = await h.call(command, command === 'create_scene'
+        ? { nodes: [{ ref: 'text', type: 'TEXT', props }] }
+        : { type: 'TEXT', props });
+      assert.equal(reply.error, undefined);
+      const id = command === 'create_scene' ? reply.result.nodes[0].id : reply.result.id;
+      const text = h.nodes.get(id);
+      assert.equal(text.textAutoResize, mode);
+      assert.equal(text.characters, props.characters);
+    }
+  });
+}
+
+test('text updates honor explicit sizing regardless of property order; omitted mode keeps resize behavior', async () => {
+  const h = pluginHarness();
+  const text = h.node('TEXT', 'Paragraph', h.page);
+  for (const mode of ['HEIGHT', 'WIDTH_AND_HEIGHT', 'NONE']) {
+    for (const props of [
+      { textAutoResize: mode, width: 180, height: 24, characters: 'Two\nlines' },
+      { characters: 'Updated\ntext', height: 24, width: 240, textAutoResize: mode },
+    ]) {
+      const reply = await h.call('update_node', { nodeId: text.id, props });
+      assert.equal(reply.error, undefined);
+      assert.equal(reply.result.textAutoResize, mode);
+      assert.equal(text.characters, props.characters);
+    }
+  }
+  text.textAutoResize = 'HEIGHT';
+  const reply = await h.call('update_node', { nodeId: text.id, props: { width: 300, height: 48 } });
+  assert.equal(reply.error, undefined);
+  assert.equal(text.textAutoResize, 'NONE');
+  assert.equal(text.width, 300);
+  assert.equal(text.height, 48);
+});
+
 test('bounded reads, mixed values and long text are explicit', async () => {
   const h = pluginHarness();
   const frame = h.node('FRAME', 'Main', h.page);

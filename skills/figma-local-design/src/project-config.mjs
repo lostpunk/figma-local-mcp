@@ -3,6 +3,7 @@ import { readFile, realpath, stat } from 'node:fs/promises';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { designRulesSchema } from './audit-schema.mjs';
 import { syncGuideSchema } from './design-schema.mjs';
+import { codeComponentsSchema } from './component-mapping-schema.mjs';
 
 const label = z.string().trim().min(1).max(200);
 const relativeFile = z.string().min(1).max(500).refine(value =>
@@ -36,6 +37,7 @@ export const projectConfigSchema = z.object({
   naming: z.object({ frames: label.optional(), components: label.optional(), layers: label.optional() }).strict().optional(),
   audit: z.object({ designSystem: designRulesSchema.optional() }).strict().optional(),
   componentStates: z.record(label, z.array(label).min(1).max(20)).optional(),
+  codeComponents: codeComponentsSchema.optional(),
   viewports: z.record(label, positive.max(10000)).optional(),
   rulesFiles: z.array(relativeFile).max(20).default([]),
   rules: z.array(z.string().min(1).max(2000)).max(100).default([]),

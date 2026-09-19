@@ -20,11 +20,14 @@
       "agents/openai.yaml",
       "scripts/install.mjs",
       "scripts/project-rules.mjs",
+      "scripts/component-mappings.mjs",
+      "scripts/web-capture.js",
       "scripts/onboarding.mjs"
     ],
     "directories": [
       "assets",
-      "references"
+      "references",
+      "evals"
     ]
   },
   "source": {

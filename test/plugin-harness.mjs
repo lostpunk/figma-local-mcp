@@ -1,6 +1,9 @@
 import vm from 'node:vm';
 import { readFileSync } from 'node:fs';
 
+// Compile the bundle once per test worker; each call still gets an isolated Figma context.
+const pluginScript = new vm.Script(readFileSync(new URL('../plugin/code.js', import.meta.url), 'utf8'));
+
 export function pluginHarness({ clock = Date } = {}) {
   const nodes = new Map();
   const messages = [];
@@ -41,7 +44,7 @@ export function pluginHarness({ clock = Date } = {}) {
       result.loadAsync = async () => { result.loaded = true; };
     } else if (type !== 'DOCUMENT') {
       Object.assign(result, { x: 0, y: 0, width: 100, height: 100, rotation: 0,
-        boundVariables: {},
+        boundVariables: {}, resolvedVariableModes: {},
         setBoundVariable(field, variable) {
           if (variable) this.boundVariables[field] = { type: 'VARIABLE_ALIAS', id: variable.id };
           else delete this.boundVariables[field];
@@ -50,7 +53,11 @@ export function pluginHarness({ clock = Date } = {}) {
         reactions: [], effects: [],
         async setReactionsAsync(reactions) { this.reactions = reactions; },
         absoluteBoundingBox: { x: 0, y: 0, width: 100, height: 100 },
-        resize(width, height) { this.width = width; this.height = height; },
+        resize(width, height) {
+          this.width = width; this.height = height;
+          // Reproduce the text-mode reset observed when explicitly resizing in Figma.
+          if (this.type === 'TEXT') this.textAutoResize = 'NONE';
+        },
         async exportAsync(settings) {
           this.lastExport = settings;
           return settings.format === 'SVG_STRING' ? '<svg/>' : new Uint8Array([137, 80, 78, 71]);
@@ -155,7 +162,11 @@ export function pluginHarness({ clock = Date } = {}) {
       async getVariableCollectionByIdAsync(id) { return collections.get(id) ?? null; },
       createVariableCollection(name) {
         const id = `collection:${nextId++}`;
-        const result = { id, name, defaultModeId: 'mode:1', modes: [{ modeId: 'mode:1', name: 'Mode 1' }],
+        const result = { id, name, key: `key-${id}`, remote: false, isExtension: false,
+          defaultModeId: 'mode:1', modes: [{ modeId: 'mode:1', name: 'Mode 1' }],
+          get variableIds() { return [...variables.values()].filter(v => v.variableCollectionId === id).map(v => v.id); },
+          addMode(name) { const modeId = `mode:${nextId++}`; this.modes.push({ modeId, name }); return modeId; },
+          removeMode(modeId) { this.modes = this.modes.filter(m => m.modeId !== modeId); for (const v of variables.values()) if (v.variableCollectionId === id) delete v.valuesByMode[modeId]; },
           remove() { collections.delete(id); } };
         collections.set(id, result);
         return result;
@@ -202,7 +213,7 @@ export function pluginHarness({ clock = Date } = {}) {
     base64Encode: bytes => Buffer.from(bytes).toString('base64'),
     base64Decode: value => new Uint8Array(Buffer.from(value, 'base64')),
   };
-  vm.runInNewContext(readFileSync(new URL('../plugin/code.js', import.meta.url), 'utf8'), {
+  pluginScript.runInNewContext({
     figma, __html__: '', console, Date: clock,
   });
   return { figma, page, root, node, nodes, fonts, variables, styles, collections, get undoCount() { return undoCount; },

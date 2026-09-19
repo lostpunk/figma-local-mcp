@@ -47,7 +47,8 @@ async function main() {
     run(process.execPath, ['build.mjs']);
     const fingerprint = pack('--fingerprint');
     const tests = (await readdir(join(root, 'test'))).filter(name => name.endsWith('.test.mjs')).sort().map(name => 'test/' + name);
-    run(process.execPath, ['--test', ...tests]);
+    // TAP retains child exit codes/signals when a worker crashes before an assertion.
+    run(process.execPath, ['--test', '--test-reporter=tap', ...tests]);
     if (pack('--fingerprint') !== fingerprint) throw new Error('Sources changed during tests. Run release again.');
     pack();
     const manifest = await readManifest(root);

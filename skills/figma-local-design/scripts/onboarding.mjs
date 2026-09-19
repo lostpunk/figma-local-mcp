@@ -1,7 +1,7 @@
 var __defProp = Object.defineProperty;
 var __export = (target, all) => {
-  for (var name2 in all)
-    __defProp(target, name2, { get: all[name2], enumerable: true });
+  for (var name3 in all)
+    __defProp(target, name3, { get: all[name3], enumerable: true });
 };
 
 // node_modules/zod/v3/external.js
@@ -4143,6 +4143,51 @@ var syncGuideSchema = {
   radii: guideSchema.radii.removeDefault().optional()
 };
 
+// src/component-mapping-schema.mjs
+var text = external_exports.string().min(1).max(200);
+var name2 = text.regex(/^[A-Za-z_$][A-Za-z0-9_$]*$/).refine((value) => !["__proto__", "constructor", "prototype"].includes(value), "Reserved name");
+var projectRelativeFile = external_exports.string().min(1).max(500).refine((value) => !/^[\\/]/.test(value) && !/[:\\\u0000-\u001f\u007f]/.test(value) && !value.split("/").some((part) => ["..", "", "."].includes(part)), "Use a project-relative file path without ..");
+var literal = external_exports.union([external_exports.string().max(2e3), external_exports.boolean(), external_exports.number().finite(), external_exports.null()]);
+var property = external_exports.object({
+  kind: external_exports.literal("property"),
+  name: name2,
+  property: text,
+  type: external_exports.enum(["TEXT", "BOOLEAN", "VARIANT", "INSTANCE_SWAP"]),
+  values: external_exports.array(external_exports.object({ figma: external_exports.union([external_exports.string().max(2e3), external_exports.boolean()]), code: literal }).strict()).min(1).max(100).optional()
+}).strict().superRefine((value, ctx) => {
+  if (["VARIANT", "INSTANCE_SWAP"].includes(value.type) && !value.values)
+    ctx.addIssue({ code: "custom", path: ["values"], message: "Variants and instance swaps require an explicit value map" });
+  const seen = /* @__PURE__ */ new Set();
+  for (const item of value.values ?? []) {
+    if (value.type === "BOOLEAN" !== (typeof item.figma === "boolean"))
+      ctx.addIssue({ code: "custom", path: ["values"], message: "Figma value type must match the declared property type" });
+    const key = JSON.stringify(item.figma);
+    if (seen.has(key)) ctx.addIssue({ code: "custom", path: ["values"], message: "Duplicate Figma value" });
+    seen.add(key);
+  }
+});
+var codeComponentsSchema = external_exports.array(external_exports.object({
+  figma: external_exports.object({ kind: external_exports.enum(["component", "componentSet"]), key: text }).strict(),
+  code: external_exports.object({
+    sourceFile: projectRelativeFile,
+    importFrom: external_exports.string().min(1).max(500).regex(/^(?:\.{1,2}\/)?[@A-Za-z0-9_][@A-Za-z0-9_./-]*$/),
+    exportName: name2,
+    exportKind: external_exports.enum(["named", "default"]).default("named"),
+    framework: text.optional()
+  }).strict(),
+  props: external_exports.array(external_exports.union([external_exports.object({ kind: external_exports.literal("constant"), name: name2, value: literal }).strict(), property])).max(50).default([])
+}).strict()).max(100).superRefine((entries, ctx) => {
+  const keys = /* @__PURE__ */ new Set();
+  entries.forEach((entry, index) => {
+    const key = `${entry.figma.kind}:${entry.figma.key}`;
+    if (keys.has(key)) ctx.addIssue({ code: "custom", path: [index, "figma"], message: "Duplicate component mapping" });
+    keys.add(key);
+    const props = entry.props.map((prop) => prop.name);
+    if (new Set(props).size !== props.length)
+      ctx.addIssue({ code: "custom", path: [index, "props"], message: "Duplicate target prop" });
+  });
+});
+
 // src/project-config.mjs
 var label2 = external_exports.string().trim().min(1).max(200);
 var relativeFile = external_exports.string().min(1).max(500).refine((value) => !isAbsolute(value) && !/^[a-z]:/i.test(value) && !value.includes("\\") && !value.split("/").includes(".."), "Use a project-relative path without ..");
@@ -4183,16 +4228,17 @@ var projectConfigSchema = external_exports.object({
   naming: external_exports.object({ frames: label2.optional(), components: label2.optional(), layers: label2.optional() }).strict().optional(),
   audit: external_exports.object({ designSystem: designRulesSchema.optional() }).strict().optional(),
   componentStates: external_exports.record(label2, external_exports.array(label2).min(1).max(20)).optional(),
+  codeComponents: codeComponentsSchema.optional(),
   viewports: external_exports.record(label2, positive.max(1e4)).optional(),
   rulesFiles: external_exports.array(relativeFile).max(20).default([]),
   rules: external_exports.array(external_exports.string().min(1).max(2e3)).max(100).default([])
 }).strict();
-async function readProjectFile(root, name2) {
-  const path = await realpath(resolve(root, name2));
+async function readProjectFile(root, name3) {
+  const path = await realpath(resolve(root, name3));
   const rel = relative(root, path);
-  if (rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) throw new Error(`File escapes the selected project: ${name2}`);
+  if (rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) throw new Error(`File escapes the selected project: ${name3}`);
   const info = await stat(path);
-  if (!info.isFile() || info.size > 65536) throw new Error(`Expected a regular file of at most 64 KiB: ${name2}`);
+  if (!info.isFile() || info.size > 65536) throw new Error(`Expected a regular file of at most 64 KiB: ${name3}`);
   return readFile(path, "utf8");
 }
 async function loadProjectRules(projectRoot) {
@@ -4226,8 +4272,8 @@ async function loadProjectRules(projectRoot) {
     throw new Error("library.components must map at least one role to an existing local component ID");
   }
   const ruleFiles = [];
-  for (const name2 of new Set([config.profileFile, ...config.rulesFiles].filter(Boolean))) {
-    ruleFiles.push({ path: name2, text: await readProjectFile(root, name2) });
+  for (const name3 of new Set([config.profileFile, ...config.rulesFiles].filter(Boolean))) {
+    ruleFiles.push({ path: name3, text: await readProjectFile(root, name3) });
   }
   const foundation = config.foundation;
   const guidePatch = foundation ? Object.fromEntries(Object.entries({
@@ -4361,7 +4407,7 @@ async function collectAnswers(ask, projectName, distribution = null) {
   const choose = async (prompt, options, defaultValue) => {
     while (true) {
       const response = (await ask(`${prompt}
-${options.map(([value2, text], i) => `${i + 1}. ${text}`).join("\n")}
+${options.map(([value2, text2], i) => `${i + 1}. ${text2}`).join("\n")}
 \u0412\u044B\u0431\u043E\u0440${defaultValue ? ` [${defaultValue}]` : ""}: `)).trim();
       const value = response || defaultValue;
       const choice = options.find(([key], i) => key === value || String(i + 1) === value);

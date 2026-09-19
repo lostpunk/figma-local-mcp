@@ -29,6 +29,15 @@ test('portable archives exclude local distribution metadata', async t => {
   assert.ok(entries.includes('figma-local-mcp/skills/figma-local-design/runtime/server.mjs'));
   assert.ok(entries.includes('figma-local-mcp/skills/figma-local-design/plugin/code.js'));
   assert.ok(entries.includes('figma-local-mcp/skills/figma-local-design/scripts/setup.mjs'));
+  assert.ok(entries.includes('figma-local-mcp/skills/figma-local-design/scripts/component-mappings.mjs'));
+  assert.ok(entries.includes('figma-local-mcp/skills/figma-local-design/scripts/web-capture.js'));
+  assert.ok(entries.includes('figma-local-mcp/skills/figma-local-design/references/web-import.md'));
+  assert.ok(entries.includes('figma-local-mcp/skills/figma-local-design/references/component-mappings.md'));
+  assert.ok(entries.includes('figma-local-mcp/skills/figma-local-design/evals/evals.json'));
+  const skillArchive = join(root, `dist/figma-local-design-skill-${version}.zip`);
+  const archivedEvals = spawnSync('python3', ['-c', 'import sys, zipfile; sys.stdout.buffer.write(zipfile.ZipFile(sys.argv[1]).read("figma-local-design/evals/evals.json"))', skillArchive], { encoding: 'utf8' });
+  assert.equal(archivedEvals.status, 0, archivedEvals.stderr);
+  assert.deepEqual(JSON.parse(archivedEvals.stdout), JSON.parse(await readFile(join(root, 'skills/figma-local-design/evals/evals.json'), 'utf8')));
   assert.ok(!entries.some(entry => entry.endsWith('/runtime-payload.json.gz') || entry.endsWith('/runtime-release.json')));
   assert.ok(!entries.some(entry => entry.endsWith('/.channel-meta.json') || entry.endsWith('/installation.json')));
   assert.ok(!entries.some(entry => entry.includes('/generated/') || entry.endsWith('.enc')));
@@ -56,6 +65,10 @@ test('portable archives exclude local distribution metadata', async t => {
   // A mistaken edit to the common inventory must not silently produce an uninstallable release.
   const layoutPath = join(root, 'src/package-layout.json');
   const layout = JSON.parse(await readFile(layoutPath, 'utf8'));
+  await writeFile(layoutPath, JSON.stringify({ ...layout, skill: { ...layout.skill, directories: layout.skill.directories.filter(name => name !== 'evals') } }));
+  const missingEvals = spawnSync('python3', [join(root, 'scripts/package.py')], { cwd: root, encoding: 'utf8' });
+  assert.notEqual(missingEvals.status, 0, 'a layout edit must not silently drop behavioral evals');
+  assert.match(missingEvals.stderr, /Standalone skill is missing/);
   layout.runtime.directories = layout.runtime.directories.filter(name => name !== 'plugin');
   await writeFile(layoutPath, JSON.stringify(layout));
   const incomplete = spawnSync('python3', [join(root, 'scripts/package.py')], { cwd: root, encoding: 'utf8' });

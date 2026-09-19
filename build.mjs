@@ -1,3 +1,4 @@
+import { captureWebPage } from './src/web-capture.mjs';
 import { build } from 'esbuild';
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { dirname, resolve, relative } from 'node:path';
@@ -64,5 +65,11 @@ await build({
   outfile: 'skills/figma-local-design/scripts/onboarding.mjs',
   platform: 'node', target: 'node22', format: 'esm', legalComments: 'eof',
 });
+await build({
+  entryPoints: ['src/component-mappings-cli.mjs'], bundle: true,
+  outfile: 'skills/figma-local-design/scripts/component-mappings.mjs',
+  platform: 'node', target: 'node22', format: 'esm', legalComments: 'eof',
+});
+await writeFile('skills/figma-local-design/scripts/web-capture.js', `(${captureWebPage.toString()})\n`);
 if (await readInstallationToken(process.cwd())) await prepareLocalPlugin(process.cwd());
 await packageSkill(process.cwd());

@@ -9,13 +9,13 @@ try {
   for (let i = 0; i < args.length; i++) {
     const flag = args[i];
     if (flag === '--help' && args.length === 1) {
-      console.log('node scripts/asset-access.mjs [--package-root PATH] [--list | --allow ABSOLUTE_DIRECTORY | --remove ABSOLUTE_DIRECTORY | --clear]\nChoose only directories needed for the requested asset import. Missing policy denies path imports. Changes apply without restarting MCP.');
+      console.log('node scripts/asset-access.mjs [--package-root PATH] [--list | --allow ABSOLUTE_DIRECTORY | --remove ABSOLUTE_DIRECTORY | --clear | --allow-export ABSOLUTE_DIRECTORY | --remove-export ABSOLUTE_DIRECTORY | --clear-export]\nImport and export directories are independent. Choose only directories needed for the task. Missing policy denies local file access. Changes apply without restarting MCP.');
       process.exit(0);
     }
     if (flag === '--package-root' && args[i + 1]) root = resolve(args[++i]);
-    else if (['--allow', '--remove'].includes(flag) && args[i + 1] && !selected) {
+    else if (['--allow', '--remove', '--allow-export', '--remove-export'].includes(flag) && args[i + 1] && !selected) {
       action = flag.slice(2); directory = args[++i]; selected = true;
-    } else if (['--list', '--clear'].includes(flag) && !selected) { action = flag.slice(2); selected = true; }
+    } else if (['--list', '--clear', '--clear-export'].includes(flag) && !selected) { action = flag.slice(2); selected = true; }
     else throw new Error('Invalid arguments; use --help');
   }
   const policy = action === 'list' ? await readAssetAccess(root) : await updateAssetAccess(root, action, directory);

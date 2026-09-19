@@ -71,11 +71,19 @@ test('asset access CLI works from another directory and revokes deleted director
   assert.equal(run('--remove', assets).status, 0);
   assert.deepEqual((await readAssetAccess(root)).allowedRoots, []);
   assert.notEqual(run('--allow', 'relative').status, 0);
+  await mkdir(assets);
+  assert.equal(run('--allow-export', assets).status, 0);
+  assert.deepEqual((await readAssetAccess(root)).allowedExportRoots, [assets]);
+  assert.deepEqual((await readAssetAccess(root)).allowedRoots, []);
+  assert.equal(run('--remove-export', assets).status, 0);
+  assert.deepEqual((await readAssetAccess(root)).allowedExportRoots, []);
+  assert.equal(run('--clear-export').status, 0);
 });
 
 test('malformed asset policy fails closed', async t => {
   const { root } = await fixture(t); await mkdir(join(root, 'generated'));
-  for (const contents of ['broken', '{"version":2,"allowedRoots":[]}', '{"version":1,"allowedRoots":["."]}']) {
+  for (const contents of ['broken', '{"version":2,"allowedRoots":[]}', '{"version":1,"allowedRoots":["."]}',
+    '{"version":1,"allowedRoots":[],"allowedExportRoots":null}', '{"version":1,"allowedRoots":[],"allowedExportRoots":["."]}']) {
     await writeFile(join(root, 'generated/asset-access.json'), contents);
     await assert.rejects(readAssetAccess(root));
   }

@@ -1,3 +1,4 @@
+import { resourceRevision } from './resource-revision';
 import { createPageChecked, getCapabilities } from './capabilities';
 import { variableResolver } from './variables';
 import { syncGuide } from './sync-guide';
@@ -12,16 +13,6 @@ export const designCommands = new Set(['create_style_guide', 'sync_style_guide',
 const rgb = (hex: string): RGB => ({ r: parseInt(hex.slice(1, 3), 16) / 255,
   g: parseInt(hex.slice(3, 5), 16) / 255, b: parseInt(hex.slice(5, 7), 16) / 255 });
 
-// A change detector for live pagination, not a security or identity token.
-function resourceRevision(value: unknown): string {
-  const text = JSON.stringify(value);
-  let a = 2166136261, b = 5381;
-  for (let i = 0; i < text.length; i++) {
-    a = Math.imul(a ^ text.charCodeAt(i), 16777619);
-    b = Math.imul(b, 33) ^ text.charCodeAt(i);
-  }
-  return `${(a >>> 0).toString(16)}-${(b >>> 0).toString(16)}`;
-}
 
 async function createGuide(args: Args, helpers: Helpers) {
   // Capture the destination before awaiting fonts: the user may switch pages meanwhile.
@@ -236,7 +227,7 @@ export async function executeDesignCommand(command: string, args: Args, helpers:
     }
     case 'create_instance': {
       const component = await helpers.getNode(args.componentId);
-      if (component.type !== 'COMPONENT') throw new Error('componentId must refer to a local COMPONENT');
+      if (component.type !== 'COMPONENT') throw new Error('componentId must refer to an accessible COMPONENT');
       const parent = args.parentId ? await helpers.getNode(args.parentId) : figma.currentPage;
       if (!['PAGE', 'FRAME', 'COMPONENT', 'SECTION'].includes(parent.type)) throw new Error('Unsupported instance parent');
       // Instances cannot be inserted into their own component or its descendants.

@@ -12,6 +12,11 @@ import { previewAuditFixes } from './audit-fixes';
 import { createPresentation, initialWindowSize } from './presentation';
 import { worldTransform, localTransform, verifyWorldTransform, placeNodes } from './node-placement';
 import { readCommands, executeNodeRead, summarize, clean } from './node-reader';
+import { designReadCommands, readDesignDetails } from './design-reader';
+import { exportAsset } from './asset-export';
+import { importWebSnapshot } from './web-import';
+import { getDesignContext } from './design-context';
+import { libraryThemeCommands, executeLibraryTheme } from './libraries-themes';
 import { jsonBytes, MAX_RESULT_BYTES, DEFAULT_READ_BYTES } from './response-size';
 type Args = Record<string, any>;
 
@@ -129,7 +134,7 @@ async function applyProps(node: SceneNode, props: Args, beforeMutation: () => vo
   if (props.fontName) target.fontName = props.fontName;
   if (props.layoutMode !== undefined) target.layoutMode = props.layoutMode;
   for (const [key, value] of Object.entries(props)) {
-    if (['width', 'height', 'fontName', 'layoutMode', 'x', 'y', 'locked', ...special].includes(key)) continue;
+    if (['width', 'height', 'fontName', 'textAutoResize', 'layoutMode', 'x', 'y', 'locked', ...special].includes(key)) continue;
     if (key === 'fill') target.fills = paint(value);
     else if (key === 'stroke') target.strokes = paint(value);
     else target[key] = value;
@@ -143,6 +148,8 @@ async function applyProps(node: SceneNode, props: Args, beforeMutation: () => vo
   if (props.locked !== undefined) node.locked = props.locked;
   for (const [field, value] of Object.entries(paints)) target[field] = value;
   for (const binding of bindings) node.setBoundVariable(binding.field as VariableBindableNodeField, binding.variable);
+  // Explicit resizing can reset text sizing. Apply the requested mode after dimensions and typography.
+  if (props.textAutoResize !== undefined) target.textAutoResize = props.textAutoResize;
 }
 
 async function createNode(args: Args): Promise<SceneNode> {
@@ -163,7 +170,12 @@ async function createNode(args: Args): Promise<SceneNode> {
   } catch (error) { node.remove(); throw error; }
 }
 async function execute(command: string, args: Args): Promise<any> {
+  if (command === 'import_web_snapshot') return importWebSnapshot(args, getNode);
+  if (libraryThemeCommands.has(command)) return executeLibraryTheme(command, args, getNode);
+  if (command === 'get_design_context') return getDesignContext(requireScene(await getNode(args.nodeId)), args);
+  if (command === 'export_asset') return exportAsset(args, getNode);
   if (readCommands.has(command)) return executeNodeRead(command, args, { getNode, requireScene });
+  if (designReadCommands.has(command)) return readDesignDetails(command, args, requireScene(await getNode(args.nodeId)));
   if (extendedCommands.has(command)) return executeExtended(command, args, { getNode });
   if (designCommands.has(command)) return executeDesignCommand(command, args, { getNode, applyProps, createNode });
   switch (command) {
@@ -367,7 +379,7 @@ figma.ui.onmessage = async (message: any) => {
         if (typeof finding.nodeId === 'string') findingTargets.add(finding.nodeId);
     }
     const response = { type: 'result', id: message.id, result };
-    const responseLimit = ['get_node', 'get_selection'].includes(message.command)
+    const responseLimit = ['get_node', 'get_selection', 'get_design_context'].includes(message.command) || designReadCommands.has(message.command)
       ? Math.min(message.args?.maxResponseBytes ?? DEFAULT_READ_BYTES, MAX_RESULT_BYTES) : MAX_RESULT_BYTES;
     if (jsonBytes(response) > responseLimit) throw new Error('RESPONSE_TOO_LARGE: Read a smaller range or fewer fields. A write may already have completed; inspect the file before retrying.');
     figma.ui.postMessage(response);

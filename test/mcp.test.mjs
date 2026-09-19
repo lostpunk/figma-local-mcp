@@ -1,3 +1,4 @@
+import { snapshot as webSnapshotFixture } from './web-import-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
@@ -37,7 +38,23 @@ for (const bundled of [false, true]) test(`MCP → WebSocket → plugin: full wo
   const call = (name, args = {}) => client.callTool({ name, arguments: args });
   const data = result => JSON.parse(result.content[0].text);
   const listed = await client.listTools();
-  assert.equal(listed.tools.length, 37);
+  assert.equal(listed.tools.length, 48);
+  // Use homogeneous item schemas for tool-host compatibility instead of
+  // positional tuples, which are unnecessary for equal-typed geometry values.
+  const checkArrays = value => {
+    if (!value || typeof value !== 'object') return;
+    if (!Array.isArray(value) && value.type === 'array') assert.ok(!Array.isArray(value.items), 'MCP arrays must use one item schema');
+    for (const child of Object.values(value)) checkArrays(child);
+  };
+  for (const tool of listed.tools) checkArrays(tool.inputSchema);
+  assert.equal(listed.tools.find(tool => tool.name === 'get_design_context').annotations.readOnlyHint, true);
+  assert.equal(listed.tools.find(tool => tool.name === 'export_assets').annotations.readOnlyHint, false);
+  assert.equal(listed.tools.find(tool => tool.name === 'export_assets').annotations.destructiveHint, false);
+  for (const name of ['get_text_runs', 'get_component_details', 'get_bound_variables', 'get_library_variables', 'get_variable_modes']) {
+    assert.equal(listed.tools.find(tool => tool.name === name).annotations.readOnlyHint, true);
+    assert.equal(listed.tools.find(tool => tool.name === name).annotations.destructiveHint, false);
+  }
+  for (const name of ['import_library_asset', 'create_variable_mode', 'set_variable_mode', 'import_web_snapshot']) assert.equal(listed.tools.find(t => t.name === name).annotations.readOnlyHint, false);
   assert.equal(listed.tools.find(t => t.name === 'preview_design_fixes').annotations.readOnlyHint, true);
   assert.equal(listed.tools.find(t => t.name === 'preview_audit_fixes').annotations.readOnlyHint, true);
   assert.equal(listed.tools.find(t => t.name === 'list_operations').annotations.readOnlyHint, true);
@@ -80,6 +97,10 @@ for (const bundled of [false, true]) test(`MCP → WebSocket → plugin: full wo
     socket.send(JSON.stringify({ ...result, id: command.id }));
   });
   assert.equal(data(await call('get_document')).name, 'Test file');
+  const beforeInvalidDepth = dispatchCount;
+  assert.equal((await call('get_node', { nodeId: h.page.id, depth: 7 })).isError, true);
+  assert.equal(dispatchCount, beforeInvalidDepth, 'unsupported depth is rejected before plugin dispatch');
+  assert.equal((await call('get_node', { nodeId: h.page.id, depth: 6 })).isError, undefined);
   const checked = data(await call('get_connection', { skillVersion }));
   assert.equal(checked.readiness.ready, true);
   assert.deepEqual(checked.readiness.versions, { server: packageVersion, plugin: packageVersion, skill: packageVersion });
@@ -119,13 +140,47 @@ for (const bundled of [false, true]) test(`MCP → WebSocket → plugin: full wo
   assert.equal(focusedRead.characters, 'Hello');
   assert.equal(focusedRead.fills, undefined);
   assert.equal(data(await call('get_node', { nodeId, fields: [] })).characters, undefined);
+  h.nodes.get(nodeId).getStyledTextSegments = (_fields, start, end) => [
+    { start, end, characters: h.nodes.get(nodeId).characters.slice(start, end), fontSize: 24 },
+  ];
+  assert.equal(data(await call('get_text_runs', { nodeId })).runs[0].characters, 'Hello');
+  assert.equal(data(await call('get_component_details', { nodeId })).status, 'not_component');
+  assert.equal(data(await call('get_bound_variables', { nodeId })).complete, true);
+  const context = await call('get_design_context', { nodeId, includeCSS: false });
+  assert.equal(data(context).nodes[0].details.text.data.runs[0].characters, 'Hello');
+  assert.equal(data(context).preview.status, 'available');
+  assert.equal(data(context).preview.data, undefined);
+  assert.equal(context.content[1].type, 'image');
+  assert.equal((await call('get_design_context', { nodeId, includePreview: false })).content.length, 1);
   const beforeInvalidRead = dispatchCount;
+  for (const [name, args] of [
+    ['get_text_runs', { nodeId, start: -1 }],
+    ['get_text_runs', { nodeId, maxCharacters: 10001 }],
+    ['get_text_runs', { nodeId, fields: ['unknownProperty'] }],
+    ['get_component_details', { nodeId, maxResponseBytes: 1 }],
+    ['get_bound_variables', { nodeId, variableIds: [''] }],
+    ['get_bound_variables', { nodeId, limit: 101 }],
+    ['get_design_context', { nodeId, maxNodes: 201 }],
+    ['get_design_context', { nodeId, includeCSS: 'true' }],
+    ['get_design_context', { nodeId, offset: 10000 }],
+  ]) assert.equal((await call(name, args)).isError, true);
   assert.equal((await call('get_node', { nodeId, fields: ['unknownProperty'] })).isError, true);
   assert.equal((await call('get_node', { nodeId, childOffset: -1 })).isError, true);
   assert.equal(dispatchCount, beforeInvalidRead);
   assert.equal(data(await call('update_node', { nodeId, props: { characters: 'World' } })).characters, 'World');
   assert.equal((await call('export_node', { nodeId })).content[0].type, 'image');
   assert.equal(data(await call('export_node', { nodeId, format: 'SVG' })).svg, '<svg/>');
+  const exportSource = { kind: 'node', nodeId, format: 'SVG', name: 'icon' };
+  const exportCount = dispatchCount;
+  assert.equal((await call('export_assets', { outputDirectory: directory, items: [exportSource] })).isError, true);
+  assert.equal(dispatchCount, exportCount, 'export denied before plugin dispatch');
+  await writeFile(join(directory, 'generated/asset-access.json'), JSON.stringify({ version: 1, allowedRoots: [], allowedExportRoots: [directory] }));
+  h.nodes.get(nodeId).exportAsync = async () => new Uint8Array(Buffer.from('<svg/>'));
+  const saved = data(await call('export_assets', { outputDirectory: directory, items: [exportSource] }));
+  assert.equal(saved.status, 'completed');
+  assert.equal(await readFile(saved.entries[0].path, 'utf8'), '<svg/>');
+  assert.equal(JSON.parse(await readFile(saved.manifestPath, 'utf8')).status, 'completed');
+  assert.ok(!JSON.stringify(saved).includes('dataBase64'));
   const imageTarget = data(await call('create_node', { type: 'RECTANGLE' })).id;
   const assetDir = join(directory, 'assets');
   await mkdir(assetDir);
@@ -203,6 +258,12 @@ for (const bundled of [false, true]) test(`MCP → WebSocket → plugin: full wo
   const filteredResources = data(await call('get_design_system', { collectionId: system.collections[0].id,
     variableNamePrefix: system.variables.find(v => v.id === brand.id).name }));
   assert.ok(filteredResources.variables.some(v => v.id === brand.id));
+  const modeCollection = system.collections[0].id;
+  const modePreview = data(await call('create_variable_mode', { collectionId: modeCollection, name: 'Dark' }));
+  assert.equal(modePreview.dryRun, true);
+  const darkMode = data(await call('create_variable_mode', { collectionId: modeCollection, name: 'Dark', dryRun: false, revision: modePreview.revision }));
+  assert.ok(darkMode.modeId);
+  assert.ok(data(await call('get_variable_modes', { collectionId: modeCollection })).collection.modes.some(m => m.modeId === darkMode.modeId));
   const count = dispatchCount;
   assert.equal((await call('create_scene', { nodes: [{ ref: 'x', parentRef: 'missing', type: 'FRAME' }] })).isError, true);
   assert.equal((await call('create_style_guide', { colors: [{ name: 'x', value: '#FFFFFF' }, { name: 'x', value: '#000000' }] })).isError, true);
@@ -240,4 +301,14 @@ for (const bundled of [false, true]) test(`MCP → WebSocket → plugin: full wo
   const history = data(await call('list_operations', { limit: 1 }));
   assert.equal(history.entries[0].command, 'apply_changes');
   assert.equal(dispatchCount, beforeHistory, 'history reads never reach Figma');
+  h.figma.listAvailableFontsAsync = async () => [{ fontName: { family: 'Inter', style: 'Regular' } }];
+  const webSnapshot = webSnapshotFixture();
+  const webPlan = data(await call('import_web_snapshot', { snapshot: webSnapshot }));
+  assert.equal(webPlan.dryRun, true);
+  const importedWeb = data(await call('import_web_snapshot', { snapshot: webSnapshot, dryRun: false, revision: webPlan.revision }));
+  assert.ok(importedWeb.rootId); assert.equal(importedWeb.nodeCount, 3);
+  const beforeInvalidWeb = dispatchCount;
+  assert.equal((await call('import_web_snapshot', { snapshot: { ...webSnapshot, url: 'https://example.com' } })).isError, true);
+  assert.equal(dispatchCount, beforeInvalidWeb);
+
 });

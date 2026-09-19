@@ -139,7 +139,7 @@ def verify():
                 if any(part in PRIVATE_PARTS or part.startswith('.env.') or part in {'.idea', 'node_modules', '.git'} for part in parts):
                     raise ValueError(f'Private or development state in archive: {entry}')
             if prefix == 'figma-local-design':
-                if not {'SKILL.md', 'scripts/install.mjs', 'src/package-layout.json', 'src/package-layout.mjs'} <= names:
+                if not {'SKILL.md', 'evals/evals.json', 'scripts/install.mjs', 'scripts/component-mappings.mjs', 'scripts/web-capture.js', 'src/package-layout.json', 'src/package-layout.mjs'} <= names:
                     raise ValueError('Standalone skill is missing its installation contract')
                 if any('test' in pathlib.PurePosixPath(entry).parts for entry in names):
                     raise ValueError('Tests must not be shipped in the standalone skill')

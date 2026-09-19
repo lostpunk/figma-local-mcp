@@ -12,6 +12,14 @@ For a lost response, read `get_operation` using its original operation ID. If th
 
 Each bridge boot gets a new operation-ID namespace. Stored completed results can be read after restart. Interrupted writes become `unknown`. If the same plugin window still holds an unacknowledged result, it may recover that result after the bridge restarts; another plugin session cannot supply it. This does not restore the plugin's five-minute preview plans or undo history.
 
+## Retries and changed intent
+
+A retry uses the original operation ID, command and exact arguments. Changing a destination, text or property is a new edit, not a retry. First resolve any pending/unknown original operation and inspect the intended file, then obtain a fresh ID for the changed request. The bridge rejects reuse of an ID with different arguments.
+
+In helper scripts, persist the ID and exact request before dispatch. Never skip work because a human-readable task label already has a completed entry: compare the command and all semantic arguments (excluding the transport `_operationId`) with the saved request. A recorded success describes a past execution, not the current desired state. Keep helper journals private because arguments and results can contain design content.
+
+For final prototype checks, compare each node/trigger with its latest intended reaction, including the destination. An intentionally replaced historical reaction is no longer the expected result. Read the actual reactions back after the final edit; a cached response is not verification.
+
 ## Storage and privacy
 
 The local journal uses AES-256-GCM with a key derived from the installation pairing key. It retains at most 100 writes, for up to seven days, with a 1 MiB per-result and 4 MiB total decoded storage budget; oversized results are omitted while their status is retained. Retention is enforced when reading/writing, not by a background deletion service. Arguments and imported asset bytes are not stored as request payloads. Results and error text can contain design content. Protect the local pairing key and backups together with the journal; encryption does not protect against someone who has both. POSIX files/directories use 0600/0700; Windows relies on the user's directory ACLs.
