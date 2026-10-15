@@ -10,6 +10,8 @@ import { pluginHarness } from './plugin-harness.mjs';
 import { mkdtemp, cp, rm, readFile, mkdir, writeFile, symlink, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import Ajv2020 from 'ajv/dist/2020.js';
+import { TOOL_SCHEMA_DIALECT } from '../src/tool-schemas.mjs';
 
 const { version: packageVersion } = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
 const { version: skillVersion } = JSON.parse(await readFile(new URL('../skills/figma-local-design/package.json', import.meta.url), 'utf8'));
@@ -39,6 +41,16 @@ for (const bundled of [false, true]) test(`MCP → WebSocket → plugin: full wo
   const data = result => JSON.parse(result.content[0].text);
   const listed = await client.listTools();
   assert.equal(listed.tools.length, 48);
+  const schemaValidator = new Ajv2020({ strict: false, allErrors: true, validateFormats: false });
+  for (const tool of listed.tools) {
+    assert.deepEqual(tool.execution, { taskSupport: 'forbidden' }, tool.name);
+    assert.equal(tool.inputSchema.$schema, TOOL_SCHEMA_DIALECT, tool.name);
+    assert.equal(schemaValidator.validateSchema(tool.inputSchema), true,
+      `${tool.name}: ${JSON.stringify(schemaValidator.errors)}`);
+    // Compilation also resolves local references; meta-schema validation alone
+    // would miss a dangling $ref in a nested tool argument.
+    assert.doesNotThrow(() => schemaValidator.compile(tool.inputSchema), tool.name);
+  }
   // Use homogeneous item schemas for tool-host compatibility instead of
   // positional tuples, which are unnecessary for equal-typed geometry values.
   const checkArrays = value => {

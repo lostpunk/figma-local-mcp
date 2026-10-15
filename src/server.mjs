@@ -19,6 +19,7 @@ import { fileURLToPath } from 'node:url';
 import nodeProperties from './node-properties.json' with { type: 'json' };
 import textProperties from './text-properties.json' with { type: 'json' };
 import { exportAssets, exportAssetsSchema } from './asset-export.mjs';
+import { createToolRegistry } from './tool-schemas.mjs';
 
 const finite = z.number().finite();
 const id = z.string().min(1).max(200);
@@ -97,10 +98,11 @@ catch (error) {
   process.exit(1);
 }
 const server = new McpServer({ name: 'figma-local', version: VERSION });
+const toolRegistry = createToolRegistry(server);
 const textResult = value => ({ content: [{ type: 'text', text: JSON.stringify(value) }] });
 let declaredSkillVersion;
 function register(name, description, inputSchema, readOnly = true) {
-  server.registerTool(name, {
+  toolRegistry.register(name, {
     description, inputSchema: readOnly ? inputSchema : { ...inputSchema, _operationId: z.string().max(100).optional().describe('Use nextOperationId from get_connection. Reuse the same ID and arguments to recover results. Never allocate a new ID to retry an uncertain edit.') },
     annotations: { readOnlyHint: readOnly, destructiveHint: !readOnly, openWorldHint: ['get_library_variables', 'import_library_asset'].includes(name) },
   }, async args => {
@@ -169,7 +171,7 @@ register('get_design_context', 'Read a bounded design-to-code context for one sc
 register('get_bound_variables', 'Read variables referenced by one scene node and resolve their values for that consumer using active/inherited modes and aliases. Does not scan descendants or mixed text runs: pass variableIds from get_text_runs to resolve those bindings. Explicit IDs need not be bound; scope distinguishes this. Continue with nextOffset; scanTruncated/unresolved entries are incomplete evidence. Does not import variables or change modes.', {
   nodeId: id, variableIds: z.array(id).max(100).optional(), offset, limit: z.number().int().min(1).max(100).default(50), maxResponseBytes,
 });
-server.registerTool('export_assets', {
+toolRegistry.register('export_assets', {
   description: 'Save up to 20 scene exports (PNG/JPG/SVG/PDF) or original image fills in a NEW local batch folder under outputDirectory. Requires assetAccess.allowedExportRoots; import permission alone does not allow writes. Image hashes come from get_node fills/strokes or get_text_runs. Never edits Figma or overwrites existing files. Returns paths, hashes and a manifest with per-item errors; interrupted batches may leave partial files. A retry creates a separate folder. Limits: 8 MiB/file, 64 MiB/batch; raster renders capped at 4096px/side with actual scale returned. No automatic Figma export presets. Source images preserve stored bytes, without node crops/effects. Keep exported project data out of published integration packages.',
   inputSchema: exportAssetsSchema,
   annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
@@ -226,7 +228,7 @@ register('set_image_fill', 'Replace a node fill with a PNG, JPEG, GIF or WebP su
   sourceMimeType: imageMimeType.optional(),
   scaleMode: z.enum(['FILL', 'FIT', 'CROP', 'TILE']).default('FILL'),
 }, false);
-server.registerTool('set_image_fill_from_path', {
+toolRegistry.register('set_image_fill_from_path', {
   description: 'Import a local PNG, JPEG, GIF or WebP file into a node fill. The file must be inside a configured asset directory; it is read with a size limit and validated by binary signature and sent only to the open Figma file.',
   inputSchema: { _operationId: z.string().max(100).optional(), nodeId: id, imagePath: z.string().min(1).max(4096), scaleMode: z.enum(['FILL', 'FIT', 'CROP', 'TILE']).default('FILL') },
   annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false },
@@ -309,6 +311,7 @@ async function stop() {
 process.on('SIGINT', () => void stop());
 process.on('SIGTERM', () => void stop());
 process.stdin.on('end', () => void stop());
+toolRegistry.installListHandler();
 await server.connect(new StdioServerTransport());
 
 }

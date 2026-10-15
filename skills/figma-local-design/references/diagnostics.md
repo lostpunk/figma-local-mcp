@@ -69,3 +69,9 @@ BRIDGE_VERSION_MISMATCH: закройте все старые MCP-клиенты
 `PAGINATION_REVISION_REQUIRED` требует `revision` из первого ответа `get_design_system`. `DESIGN_SYSTEM_CHANGED` означает изменение ресурсов или фильтров: начните перечисление заново без offsets/revision.
 
 При самопроверке установки `LOCAL_SOCKET_DENIED` означает запрет localhost для установщика; `CHECK_TIMEOUT` — превышение 15 секунд; `INVALID_RUNTIME` — отсутствующий или повреждённый runtime; `ASSET_ACCESS_CHECK_FAILED` — проблему чтения настроек разрешённых каталогов. `RUNTIME_CHECK_FAILED` сопровождается безопасным этапом и кодом завершения, если они известны. Сырой stderr и содержимое файлов не включаются в сообщение.
+
+## Tool schema rejected before any Figma operation
+
+If the client reports `input_schema: JSON schema is invalid (must match JSON Schema draft 2020-12)`, inspect the installed server version and its actual `tools/list` response. Package 0.7.39 explicitly advertises Draft 2020-12 for all 48 tools; earlier releases advertise Draft-07. Update the MCP runtime and restart the MCP client so it refreshes cached tool definitions. A Figma plugin reconnect alone does not refresh those schemas.
+
+The package checks schema syntax and local references for source and standalone runtimes. This does not prove acceptance by every model provider. If rejection remains, request the runtime version, client version, failing tool name/index and redacted error; do not collect API keys, account credentials or design content. Do not infer that `definitions`, an empty `required` array or an unfamiliar annotation is itself invalid without validating the actual schema.

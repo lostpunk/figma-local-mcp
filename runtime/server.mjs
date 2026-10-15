@@ -27370,7 +27370,7 @@ function createOperations({ maxEntries = 100, maxBytes = 16 * 1024 * 1024, histo
 // package.json
 var package_default = {
   name: "figma-local-mcp",
-  version: "0.7.38",
+  version: "0.7.39",
   private: true,
   type: "module",
   engines: {
@@ -27386,12 +27386,14 @@ var package_default = {
   },
   dependencies: {
     "@modelcontextprotocol/sdk": "^1.0.0",
+    saxes: "6.0.0",
     ws: "^8.18.0",
     zod: "^3.24.0",
-    saxes: "6.0.0"
+    "zod-to-json-schema": "3.25.2"
   },
   devDependencies: {
     "@figma/plugin-typings": "^1.0.0",
+    ajv: "8.20.0",
     esbuild: "^0.25.0",
     typescript: "^5.7.0"
   }
@@ -28691,6 +28693,47 @@ async function exportAssets({ packageRoot: packageRoot2, args, request }) {
   };
 }
 
+// src/tool-schemas.mjs
+var TOOL_SCHEMA_DIALECT = "https://json-schema.org/draft/2020-12/schema";
+function toolInputSchema(shape) {
+  if (Object.keys(shape).length === 0) return { type: "object", properties: {}, $schema: TOOL_SCHEMA_DIALECT };
+  const schema2 = zodToJsonSchema(external_exports.object(shape), { strictUnions: true, pipeStrategy: "input" });
+  function check2(node) {
+    if (!node || typeof node !== "object") return;
+    if (Array.isArray(node.items) || "additionalItems" in node || "dependencies" in node || "$recursiveRef" in node || "$recursiveAnchor" in node) {
+      throw new Error("Tool schema uses a keyword requiring explicit Draft 2020-12 conversion");
+    }
+    for (const key of ["properties", "patternProperties", "definitions", "$defs", "dependentSchemas"]) {
+      for (const child of Object.values(node[key] ?? {})) check2(child);
+    }
+    for (const key of ["items", "additionalProperties", "propertyNames", "contains", "not", "if", "then", "else"]) check2(node[key]);
+    for (const key of ["allOf", "anyOf", "oneOf", "prefixItems"]) for (const child of node[key] ?? []) check2(child);
+  }
+  check2(schema2);
+  return { ...schema2, $schema: TOOL_SCHEMA_DIALECT };
+}
+function createToolRegistry(server) {
+  const tools = [];
+  return {
+    register(name4, config2, handler) {
+      const inputSchema = toolInputSchema(config2.inputSchema);
+      const tool = server.registerTool(name4, config2, handler);
+      tools.push({
+        name: name4,
+        title: tool.title,
+        description: tool.description,
+        inputSchema,
+        annotations: tool.annotations,
+        execution: tool.execution,
+        _meta: tool._meta
+      });
+    },
+    installListHandler() {
+      server.server.setRequestHandler(ListToolsRequestSchema, () => ({ tools }));
+    }
+  };
+}
+
 // src/server.mjs
 var finite2 = external_exports.number().finite();
 var id4 = external_exports.string().min(1).max(200);
@@ -28786,7 +28829,7 @@ if (process.argv.includes("--check-installation")) {
   }
 } else {
   let register = function(name4, description, inputSchema, readOnly = true) {
-    server.registerTool(name4, {
+    toolRegistry.register(name4, {
       description,
       inputSchema: readOnly ? inputSchema : { ...inputSchema, _operationId: external_exports.string().max(100).optional().describe("Use nextOperationId from get_connection. Reuse the same ID and arguments to recover results. Never allocate a new ID to retry an uncertain edit.") },
       annotations: { readOnlyHint: readOnly, destructiveHint: !readOnly, openWorldHint: ["get_library_variables", "import_library_asset"].includes(name4) }
@@ -28836,6 +28879,7 @@ if (process.argv.includes("--check-installation")) {
     process.exit(1);
   }
   const server = new McpServer({ name: "figma-local", version: VERSION });
+  const toolRegistry = createToolRegistry(server);
   const textResult = (value) => ({ content: [{ type: "text", text: JSON.stringify(value) }] });
   let declaredSkillVersion;
   async function readLocalImage(imagePath) {
@@ -28883,7 +28927,7 @@ if (process.argv.includes("--check-installation")) {
     limit: external_exports.number().int().min(1).max(100).default(50),
     maxResponseBytes
   });
-  server.registerTool("export_assets", {
+  toolRegistry.register("export_assets", {
     description: "Save up to 20 scene exports (PNG/JPG/SVG/PDF) or original image fills in a NEW local batch folder under outputDirectory. Requires assetAccess.allowedExportRoots; import permission alone does not allow writes. Image hashes come from get_node fills/strokes or get_text_runs. Never edits Figma or overwrites existing files. Returns paths, hashes and a manifest with per-item errors; interrupted batches may leave partial files. A retry creates a separate folder. Limits: 8 MiB/file, 64 MiB/batch; raster renders capped at 4096px/side with actual scale returned. No automatic Figma export presets. Source images preserve stored bytes, without node crops/effects. Keep exported project data out of published integration packages.",
     inputSchema: exportAssetsSchema,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false }
@@ -28948,7 +28992,7 @@ if (process.argv.includes("--check-installation")) {
     sourceMimeType: imageMimeType.optional(),
     scaleMode: external_exports.enum(["FILL", "FIT", "CROP", "TILE"]).default("FILL")
   }, false);
-  server.registerTool("set_image_fill_from_path", {
+  toolRegistry.register("set_image_fill_from_path", {
     description: "Import a local PNG, JPEG, GIF or WebP file into a node fill. The file must be inside a configured asset directory; it is read with a size limit and validated by binary signature and sent only to the open Figma file.",
     inputSchema: { _operationId: external_exports.string().max(100).optional(), nodeId: id4, imagePath: external_exports.string().min(1).max(4096), scaleMode: external_exports.enum(["FILL", "FIT", "CROP", "TILE"]).default("FILL") },
     annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false }
@@ -29059,6 +29103,7 @@ if (process.argv.includes("--check-installation")) {
   process.on("SIGINT", () => void stop());
   process.on("SIGTERM", () => void stop());
   process.stdin.on("end", () => void stop());
+  toolRegistry.installListHandler();
   await server.connect(new StdioServerTransport());
 }
 var register2;
